@@ -179,7 +179,7 @@ class EmulatorViewModel @Inject constructor(
         val romDocument = uriHandler.getUriDocument(rom.uri)
 
         val romFileName = romDocument?.name ?: throw SramLoadException("Cannot determine SRAM file name: ${romDocument?.uri}")
-        val sramFileName = romFileName.replaceAfterLast('.', "sav", "$romFileName.sav")
+        val sramFileName = romFileName.replaceAfterLast('.', "dsv", "$romFileName.dsv")
 
         val sramDocument = rootDocument.findFile(sramFileName)
         return sramDocument?.uri ?: rootDocument.createFile("*/*", sramFileName)?.uri ?: throw SramLoadException("Could not create temporary SRAM file at ${rootDocument.uri}")
