@@ -8,7 +8,12 @@ import me.magnum.melonds.databinding.ItemCheatsCheatBinding
 import me.magnum.melonds.domain.model.Cheat
 import me.magnum.melonds.extensions.setViewEnabledRecursive
 
-class CheatsSubScreenFragment : SubScreenFragment() {
+class FolderCheatsScreenFragment : SubScreenFragment() {
+
+    override fun getScreenName(): String? {
+        return viewModel.getSelectedFolder().value?.name
+    }
+
     override fun getSubScreenAdapter(): RecyclerView.Adapter<*> {
         return CheatsAdapter(viewModel.getSelectedFolderCheats()) { cheat, isEnabled ->
             viewModel.notifyCheatEnabledStatusChanged(cheat, isEnabled)
@@ -16,24 +21,20 @@ class CheatsSubScreenFragment : SubScreenFragment() {
     }
 
     private class CheatsAdapter(private val cheats: List<Cheat>, private val onCheatEnableToggled: (Cheat, Boolean) -> Unit) : RecyclerView.Adapter<CheatsAdapter.ViewHolder>() {
-        class ViewHolder(private val binding: ItemCheatsCheatBinding, val onCheatEnableToggled: (Cheat, Boolean) -> Unit) : RecyclerView.ViewHolder(binding.root) {
-            private lateinit var cheat: Cheat
 
-            init {
-                binding.checkboxCheatEnabled.setOnCheckedChangeListener { _, isEnabled ->
-                    onCheatEnableToggled.invoke(cheat, isEnabled)
-                }
-            }
+        class ViewHolder(private val binding: ItemCheatsCheatBinding, private val onCheatEnableToggled: (Cheat, Boolean) -> Unit) : RecyclerView.ViewHolder(binding.root) {
 
             fun setCheat(cheat: Cheat) {
-                this.cheat = cheat
-
                 val isCheatValid = cheat.isValid()
                 binding.root.setViewEnabledRecursive(isCheatValid)
                 binding.textCheatName.text = cheat.name
                 binding.textCheatDescription.isGone = cheat.description.isNullOrEmpty()
                 binding.textCheatDescription.text = cheat.description
                 binding.checkboxCheatEnabled.isChecked = isCheatValid && cheat.enabled
+
+                binding.checkboxCheatEnabled.setOnCheckedChangeListener { _, isEnabled ->
+                    onCheatEnableToggled.invoke(cheat, isEnabled)
+                }
             }
 
             fun toggle() {

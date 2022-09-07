@@ -12,12 +12,17 @@ import androidx.core.os.bundleOf
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.DividerItemDecoration
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dagger.hilt.android.AndroidEntryPoint
-import io.reactivex.disposables.Disposable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
 import me.magnum.melonds.R
 import me.magnum.melonds.databinding.ItemRomConfigurableBinding
 import me.magnum.melonds.databinding.ItemRomSimpleBinding
@@ -26,8 +31,6 @@ import me.magnum.melonds.domain.model.Rom
 import me.magnum.melonds.domain.model.RomIconFiltering
 import me.magnum.melonds.domain.model.RomScanningStatus
 import me.magnum.melonds.ui.romlist.RomListFragment.RomListAdapter.RomViewHolder
-import me.magnum.melonds.utils.FileUtils
-import java.util.*
 
 @AndroidEntryPoint
 class RomListFragment : Fragment() {
@@ -60,7 +63,7 @@ class RomListFragment : Fragment() {
         binding.swipeRefreshRoms.setOnRefreshListener { romListViewModel.refreshRoms() }
 
         val allowRomConfiguration = arguments?.getBoolean(KEY_ALLOW_ROM_CONFIGURATION) ?: true
-        romListAdapter = RomListAdapter(allowRomConfiguration, requireContext(), object : RomClickListener {
+        romListAdapter = RomListAdapter(allowRomConfiguration, requireContext(), lifecycleScope, object : RomClickListener {
             override fun onRomClicked(rom: Rom) {
                 romListViewModel.setRomLastPlayedNow(rom)
                 romSelectedListener?.invoke(rom)
@@ -78,19 +81,30 @@ class RomListFragment : Fragment() {
             adapter = romListAdapter
         }
 
-        romListViewModel.getRomScanningStatus().observe(viewLifecycleOwner) { status ->
-            binding.swipeRefreshRoms.isRefreshing = status == RomScanningStatus.SCANNING
-            displayEmptyListViewIfRequired()
+        lifecycleScope.launchWhenStarted {
+            romListViewModel.romScanningStatus.collectLatest { status ->
+                binding.swipeRefreshRoms.isRefreshing = status == RomScanningStatus.SCANNING
+                displayEmptyListViewIfRequired()
+            }
         }
-        romListViewModel.getRoms().observe(viewLifecycleOwner) { roms ->
-            romListAdapter.setRoms(roms)
-            displayEmptyListViewIfRequired()
+
+        lifecycleScope.launchWhenStarted {
+            romListViewModel.roms.filterNotNull().collectLatest { roms ->
+                romListAdapter.setRoms(roms)
+                displayEmptyListViewIfRequired()
+            }
+        }
+
+        lifecycleScope.launchWhenStarted {
+            romListViewModel.onRomIconFilteringChanged.collectLatest {
+                romListAdapter.updateIcons()
+            }
         }
     }
 
     private fun displayEmptyListViewIfRequired() {
         val isScanning = binding.swipeRefreshRoms.isRefreshing
-        val emptyViewVisible = !isScanning && romListAdapter.itemCount == 0
+        val emptyViewVisible = !isScanning && romListViewModel.roms.value?.size == 0
         binding.textRomListEmpty.isVisible = emptyViewVisible
     }
 
@@ -98,7 +112,13 @@ class RomListFragment : Fragment() {
         romSelectedListener = listener
     }
 
-    private inner class RomListAdapter(private val allowRomConfiguration: Boolean, private val context: Context, private val listener: RomClickListener) : RecyclerView.Adapter<RomViewHolder>() {
+    private inner class RomListAdapter(
+        private val allowRomConfiguration: Boolean,
+        private val context: Context,
+        private val coroutineScope: CoroutineScope,
+        private val listener: RomClickListener
+    ) : RecyclerView.Adapter<RomViewHolder>() {
+
         private val roms: ArrayList<Rom> = ArrayList()
 
         fun setRoms(roms: List<Rom>) {
@@ -109,13 +129,18 @@ class RomListFragment : Fragment() {
             this.roms.addAll(roms)
         }
 
+        fun updateIcons() {
+            val diff = DiffUtil.calculateDiff(RomIconDiffUtilCallback(this.roms.size))
+            diff.dispatchUpdatesTo(this)
+        }
+
         override fun onCreateViewHolder(viewGroup: ViewGroup, i: Int): RomViewHolder {
             return if (allowRomConfiguration) {
                 val binding = ItemRomConfigurableBinding.inflate(LayoutInflater.from(context), viewGroup, false)
-                ConfigurableRomViewHolder(binding.root, listener::onRomClicked, listener::onRomConfigClicked)
+                ConfigurableRomViewHolder(binding.root, lifecycleScope, listener::onRomClicked, listener::onRomConfigClicked)
             } else {
                 val binding = ItemRomSimpleBinding.inflate(LayoutInflater.from(context), viewGroup, false)
-                RomViewHolder(binding.root, listener::onRomClicked)
+                RomViewHolder(binding.root, coroutineScope, listener::onRomClicked)
             }
         }
 
@@ -132,13 +157,13 @@ class RomListFragment : Fragment() {
             return roms.size
         }
 
-        open inner class RomViewHolder(itemView: View, onRomClick: (Rom) -> Unit) : RecyclerView.ViewHolder(itemView) {
+        open inner class RomViewHolder(itemView: View, private val coroutineScope: CoroutineScope, onRomClick: (Rom) -> Unit) : RecyclerView.ViewHolder(itemView) {
             private val imageViewRomIcon = itemView.findViewById<ImageView>(R.id.imageRomIcon)
             private val textViewRomName = itemView.findViewById<TextView>(R.id.textRomName)
             private val textViewRomPath = itemView.findViewById<TextView>(R.id.textRomPath)
 
             private lateinit var rom: Rom
-            private var romIconLoadDisposable: Disposable? = null
+            private var romIconLoadJob: Job? = null
 
             init {
                 itemView.setOnClickListener {
@@ -147,16 +172,17 @@ class RomListFragment : Fragment() {
             }
 
             fun cleanup() {
-                romIconLoadDisposable?.dispose()
+                romIconLoadJob?.cancel()
             }
 
             open fun setRom(rom: Rom) {
                 this.rom = rom
                 textViewRomName.text = rom.name
-                textViewRomPath.text = romListViewModel.getUriDocumentName(rom.uri) ?: ""
+                textViewRomPath.text = rom.fileName
                 imageViewRomIcon.setImageDrawable(null)
 
-                romIconLoadDisposable = romListViewModel.getRomIcon(rom).subscribe { romIcon ->
+                romIconLoadJob = coroutineScope.launch {
+                    val romIcon = romListViewModel.getRomIcon(rom)
                     val iconDrawable = BitmapDrawable(itemView.resources, romIcon.bitmap)
                     iconDrawable.paint.isFilterBitmap = romIcon.filtering == RomIconFiltering.LINEAR
                     imageViewRomIcon.setImageDrawable(iconDrawable)
@@ -166,7 +192,13 @@ class RomListFragment : Fragment() {
             protected fun getRom() = rom
         }
 
-        inner class ConfigurableRomViewHolder(itemView: View, onRomClick: (Rom) -> Unit, onRomConfigClick: (Rom) -> Unit) : RomViewHolder(itemView, onRomClick) {
+        inner class ConfigurableRomViewHolder(
+            itemView: View,
+            coroutineScope: CoroutineScope,
+            onRomClick: (Rom) -> Unit,
+            onRomConfigClick: (Rom) -> Unit
+        ) : RomViewHolder(itemView, coroutineScope, onRomClick) {
+
             private val imageViewButtonRomConfig = itemView.findViewById<ImageView>(R.id.buttonRomConfig)
 
             init {
@@ -188,6 +220,20 @@ class RomListFragment : Fragment() {
             override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
                 return oldRoms[oldItemPosition] == newRoms[newItemPosition]
             }
+        }
+
+        /**
+         * [DiffUtil] callback used to update the ROM icons in the adapter. This callback doesn't compare any item and has a fixed output. To force the icons to update, the
+         * items are always assume to be the same but with different content.
+         */
+        inner class RomIconDiffUtilCallback(private val romCount: Int) : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = romCount
+
+            override fun getNewListSize(): Int = romCount
+
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean = true
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean = false
         }
     }
 

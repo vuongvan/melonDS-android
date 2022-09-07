@@ -15,8 +15,10 @@ import androidx.appcompat.widget.SearchView
 import androidx.core.content.getSystemService
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.fragment.app.commit
+import androidx.lifecycle.lifecycleScope
 import dagger.hilt.android.AndroidEntryPoint
 import io.noties.markwon.Markwon
+import kotlinx.coroutines.flow.collectLatest
 import me.magnum.melonds.R
 import me.magnum.melonds.common.Permission
 import me.magnum.melonds.common.contracts.DirectoryPickerContract
@@ -71,15 +73,22 @@ class RomListActivity : AppCompatActivity() {
         val binding = ActivityRomListBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        viewModel.hasRomScanningDirectories().observe(this) { hasDirectories ->
-            if (hasDirectories)
-                addRomListFragment()
-            else
-                addNoSearchDirectoriesFragment()
+        lifecycleScope.launchWhenStarted {
+            viewModel.hasSearchDirectories.collectLatest { hasDirectories ->
+                if (hasDirectories) {
+                    addRomListFragment()
+                } else {
+                    addNoSearchDirectoriesFragment()
+                }
+            }
         }
-        viewModel.invalidDirectoryAccessEvent.observe(this) {
-            showInvalidDirectoryAccessDialog()
+
+        lifecycleScope.launchWhenStarted {
+            viewModel.invalidDirectoryAccessEvent.collectLatest {
+                showInvalidDirectoryAccessDialog()
+            }
         }
+
         updatesViewModel.getAppUpdate().observe(this) {
             showUpdateAvailableDialog(it)
         }
@@ -88,10 +97,7 @@ class RomListActivity : AppCompatActivity() {
         }
     }
 
-    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
-        if (menu == null)
-            return super.onCreateOptionsMenu(menu)
-
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
         menuInflater.inflate(R.menu.rom_list_menu, menu)
 
         val searchItem =  menu.findItem(R.id.action_search_roms)
@@ -115,12 +121,12 @@ class RomListActivity : AppCompatActivity() {
 
         // Fix for action items not appearing after closing the search view
         searchItem.setOnActionExpandListener(object : MenuItem.OnActionExpandListener {
-            override fun onMenuItemActionExpand(item: MenuItem?): Boolean {
+            override fun onMenuItemActionExpand(item: MenuItem): Boolean {
                 return true
             }
 
-            override fun onMenuItemActionCollapse(item: MenuItem?): Boolean {
-                invalidateOptionsMenu()
+            override fun onMenuItemActionCollapse(item: MenuItem): Boolean {
+                invalidateMenu()
                 return true
             }
         })

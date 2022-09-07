@@ -124,10 +124,11 @@ dependencies {
 
     // Third-party
     with(Dependencies.ThirdParty) {
-        implementation(masterSwitchPreference)
+        implementation(project(masterSwitchPreference))
         implementation(flexbox)
         implementation(gson)
         implementation(hilt)
+        implementation(kotlinxCoroutinesRx)
         implementation(picasso)
         implementation(markwon)
         implementation(markwonImagePicasso)

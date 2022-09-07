@@ -3,8 +3,10 @@ package me.magnum.melonds.ui.layouteditor
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Bundle
+import android.view.KeyEvent
 import android.widget.SeekBar
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
@@ -62,6 +64,12 @@ class LayoutEditorActivity : AppCompatActivity() {
         binding = ActivityLayoutEditorBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        onBackPressedDispatcher.addCallback(object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                openMenu()
+            }
+        })
+
         binding.buttonAddButton.setOnClickListener {
             openButtonsMenu()
         }
@@ -118,8 +126,14 @@ class LayoutEditorActivity : AppCompatActivity() {
         hideScalingControls(false)
     }
 
-    override fun onBackPressed() {
-        openMenu()
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (event == null) return super.onKeyDown(keyCode, event)
+
+        return if (binding.viewLayoutEditor.handleKeyDown(event)) {
+            true
+        } else {
+            super.onKeyDown(keyCode, event)
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -349,6 +363,7 @@ class LayoutEditorActivity : AppCompatActivity() {
 
     private fun showLayoutNameInputDialog() {
         TextInputDialog.Builder()
+                .setTitle(getString(R.string.layout_name))
                 .setOnConfirmListener {
                     viewModel.setCurrentLayoutName(it)
                     saveLayoutAndExit()
