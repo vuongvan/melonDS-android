@@ -40,6 +40,9 @@ add_library(
         SHARED
 
         src/main/cpp/MelonDSAndroidJNI.cpp
+        src/main/cpp/MelonDSAndroidConfiguration.cpp
+        src/main/cpp/MelonDSAndroidInterface.cpp
+        src/main/cpp/MelonDSNandJNI.cpp
         src/main/cpp/UriFileHandler.cpp
         src/main/cpp/JniEnvHandler.cpp
 )
