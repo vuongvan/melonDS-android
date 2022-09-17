@@ -43,7 +43,11 @@
 
     <string name="dsiware_manager">DSiWare Manager</string>
     <string name="no_dsiware_titles_installed">You don\'t have any DSiWare title installed</string>
+    <string name="dsiware_manager_no_dsi_setup">You haven\'t setup the DSi system</string>
+    <string name="dsiware_manager_invalid_dsi_setup">Your DSi system setup is invalid</string>
     <string name="import_dsiware_title">Import DSiWare title</string>
+    <string name="dsiware_manager_setup">Setup</string>
+    <string name="dsiware_manager_fix_setup">Fix setup</string>
 
     <string name="info_fps">FPS: %1$d</string>
     <string name="info_loading">LOADING…</string>
@@ -116,11 +120,12 @@
     <string name="cache_size">Cache size: %s</string>
     <string name="cache_size_calculating">Cache size: calculating…</string>
     <string name="rom_search_directory">Search directory</string>
+    <string name="use_custom_bios">Use custom BIOS and firmware</string>
     <string name="console_type">Default system</string>
     <string name="internal_firmware_settings">Internal firmware settings</string>
     <string name="internal_firmware_settings_summary">Adjust the settings of the internal firmware.</string>
     <string name="custom_bios_firmware">Custom BIOS and firmware</string>
-    <string name="custom_bios_firmware_description">Using a custom BIOS and firmware allows you to launch and navigate in the DS\'s firmware without loading a ROM, just like in a real system.\n\nYou will need to dump the BIOS and firmware files from a real system.\n\nUsing a custom BIOS and firmware is required for DSi support.</string>
+    <string name="custom_bios_firmware_description">Using a custom BIOS and firmware allows you to launch and navigate in the DS\'s firmware without loading a ROM, just like in a real system</string>
     <string name="bios_directory">DS BIOS directory</string>
     <string name="dsi_bios_directory">DSi BIOS directory</string>
     <string name="show_boot_screen">Show boot screen</string>
