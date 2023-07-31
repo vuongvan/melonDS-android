@@ -68,6 +68,7 @@ import me.magnum.melonds.extensions.setLayoutOrientation
 import me.magnum.melonds.parcelables.RomInfoParcelable
 import me.magnum.melonds.parcelables.RomParcelable
 import me.magnum.melonds.ui.cheats.CheatsActivity
+import me.magnum.melonds.impl.emulator.LifecycleOwnerProvider
 import me.magnum.melonds.ui.emulator.input.FrontendInputHandler
 import me.magnum.melonds.ui.emulator.input.INativeInputListener
 import me.magnum.melonds.ui.emulator.input.InputProcessor
@@ -85,6 +86,7 @@ import me.magnum.melonds.ui.emulator.rom.SaveStateListAdapter
 import me.magnum.melonds.ui.emulator.ui.AchievementPopupUi
 import me.magnum.melonds.ui.emulator.ui.RAIntegrationEventUi
 import me.magnum.melonds.ui.settings.SettingsActivity
+import me.magnum.melonds.ui.theme.MelonTheme
 import java.text.SimpleDateFormat
 import javax.inject.Inject
 
@@ -125,6 +127,9 @@ class EmulatorActivity : AppCompatActivity() {
 
     @Inject
     lateinit var permissionHandler: PermissionHandler
+
+    @Inject
+    lateinit var lifecycleOwnerProvider: LifecycleOwnerProvider
 
     private lateinit var dsRenderer: DSRenderer
     private lateinit var melonTouchHandler: MelonTouchHandler
@@ -198,6 +203,7 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycleOwnerProvider.setCurrentLifecycleOwner(this)
         binding = ActivityEmulatorBinding.inflate(layoutInflater)
         supportRequestWindowFeature(Window.FEATURE_NO_TITLE)
         setContentView(binding.root)
@@ -246,64 +252,66 @@ class EmulatorActivity : AppCompatActivity() {
         launchEmulator()
 
         binding.layoutAchievement.setContent {
-            var popupEvent by remember {
-                mutableStateOf<PopupEvent?>(null)
-            }
-            var popupOffset by remember {
-                mutableStateOf(-1f)
-            }
-            var popupHeight by remember {
-                mutableStateOf<Int?>(null)
-            }
-
-            LaunchedEffect(null) {
-                val achievementsFlow = viewModel.achievementTriggeredEvent.map { PopupEvent.AchievementUnlockPopup(it) }
-                val integrationFlow = viewModel.integrationEvent.map { PopupEvent.RAIntegrationPopup(it) }
-
-                merge(achievementsFlow, integrationFlow).collect {
-                    popupEvent = it
-                    animate(
-                        initialValue = -1f,
-                        targetValue = 0f,
-                        animationSpec = tween(easing = LinearEasing),
-                    ) { value, _ ->
-                        popupOffset = value
-                    }
-                    delay(5500)
-                    animate(
-                        initialValue = 0f,
-                        targetValue = -1f,
-                        animationSpec = tween(easing = LinearEasing),
-                    ) { value, _ ->
-                        popupOffset = value
-                    }
-                    popupEvent = null
+            MelonTheme {
+                var popupEvent by remember {
+                    mutableStateOf<PopupEvent?>(null)
                 }
-            }
+                var popupOffset by remember {
+                    mutableStateOf(-1f)
+                }
+                var popupHeight by remember {
+                    mutableStateOf<Int?>(null)
+                }
 
-            Box(Modifier.fillMaxWidth()) {
-                val currentPopupEvent = popupEvent
-                when (currentPopupEvent) {
-                    is PopupEvent.AchievementUnlockPopup -> {
-                        AchievementPopupUi(
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .offset(y = (popupOffset * (popupHeight ?: Int.MAX_VALUE)).dp)
-                                .onSizeChanged { popupHeight = it.height },
-                            achievement = currentPopupEvent.achievement,
-                        )
+                LaunchedEffect(null) {
+                    val achievementsFlow = viewModel.achievementTriggeredEvent.map { PopupEvent.AchievementUnlockPopup(it) }
+                    val integrationFlow = viewModel.integrationEvent.map { PopupEvent.RAIntegrationPopup(it) }
+
+                    merge(achievementsFlow, integrationFlow).collect {
+                        popupEvent = it
+                        animate(
+                            initialValue = -1f,
+                            targetValue = 0f,
+                            animationSpec = tween(easing = LinearEasing),
+                        ) { value, _ ->
+                            popupOffset = value
+                        }
+                        delay(5500)
+                        animate(
+                            initialValue = 0f,
+                            targetValue = -1f,
+                            animationSpec = tween(easing = LinearEasing),
+                        ) { value, _ ->
+                            popupOffset = value
+                        }
+                        popupEvent = null
                     }
-                    is PopupEvent.RAIntegrationPopup -> {
-                        RAIntegrationEventUi(
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .offset(y = (popupOffset * (popupHeight ?: Int.MAX_VALUE)).dp)
-                                .onSizeChanged { popupHeight = it.height },
-                            event = currentPopupEvent.event,
-                        )
-                    }
-                    null -> {
-                        // Do nothing
+                }
+
+                Box(Modifier.fillMaxWidth()) {
+                    val currentPopupEvent = popupEvent
+                    when (currentPopupEvent) {
+                        is PopupEvent.AchievementUnlockPopup -> {
+                            AchievementPopupUi(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .offset(y = (popupOffset * (popupHeight ?: Int.MAX_VALUE)).dp)
+                                    .onSizeChanged { popupHeight = it.height },
+                                achievement = currentPopupEvent.achievement,
+                            )
+                        }
+                        is PopupEvent.RAIntegrationPopup -> {
+                            RAIntegrationEventUi(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .offset(y = (popupOffset * (popupHeight ?: Int.MAX_VALUE)).dp)
+                                    .onSizeChanged { popupHeight = it.height },
+                                event = currentPopupEvent.event,
+                            )
+                        }
+                        null -> {
+                            // Do nothing
+                        }
                     }
                 }
             }

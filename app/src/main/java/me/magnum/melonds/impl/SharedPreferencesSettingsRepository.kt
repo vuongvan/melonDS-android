@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import me.magnum.melonds.common.uridelegates.UriHandler
 import me.magnum.melonds.domain.model.*
+import me.magnum.melonds.domain.model.camera.DSiCameraSourceType
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.extensions.isSustainedPerformanceModeAvailable
 import me.magnum.melonds.ui.Theme
@@ -247,6 +248,16 @@ class SharedPreferencesSettingsRepository(
         return FpsCounterPosition.valueOf(fpsCounterPreference.uppercase())
     }
 
+    override fun getDSiCameraSource(): DSiCameraSourceType {
+        val dsiCameraSource = preferences.getString("dsi_camera_source", "physical_cameras")!!
+        return DSiCameraSourceType.valueOf(dsiCameraSource.uppercase())
+    }
+
+    override fun getDSiCameraStaticImage(): Uri? {
+        val staticImagePreference = preferences.getStringSet("dsi_camera_static_image", null)?.firstOrNull()
+        return staticImagePreference?.toUri()
+    }
+
     override fun isSoundEnabled(): Boolean {
         return preferences.getBoolean("sound_enabled", true)
     }
@@ -407,6 +418,18 @@ class SharedPreferencesSettingsRepository(
         }
     }
 
+    override fun observeDSiCameraSource(): Flow<DSiCameraSourceType> {
+        return getOrCreatePreferenceSharedFlow("dsi_camera_source") {
+            getDSiCameraSource()
+        }
+    }
+
+    override fun observeDSiCameraStaticImage(): Flow<Uri?> {
+        return getOrCreatePreferenceSharedFlow("dsi_camera_static_image") {
+            getDSiCameraStaticImage()
+        }
+    }
+
     override fun setDsBiosDirectory(directoryUri: Uri) {
         preferences.edit {
             putStringSet("bios_dir", setOf(directoryUri.toString()))
@@ -463,8 +486,8 @@ class SharedPreferencesSettingsRepository(
         }
     }
 
-    override fun observeRomIconFiltering(): Observable<RomIconFiltering> {
-        return getOrCreatePreferenceObservable("rom_icon_filtering") {
+    override fun observeRomIconFiltering(): Flow<RomIconFiltering> {
+        return getOrCreatePreferenceSharedFlow("rom_icon_filtering") {
             getRomIconFiltering()
         }
     }

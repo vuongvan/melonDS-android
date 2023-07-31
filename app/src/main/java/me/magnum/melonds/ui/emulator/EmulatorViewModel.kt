@@ -634,18 +634,17 @@ class EmulatorViewModel @Inject constructor(
 
     private suspend fun getRomAchievementData(rom: Rom): GameAchievementData {
         if (!retroAchievementsRepository.isUserAuthenticated()) {
-            return GameAchievementData.withDisabledRetroAchievementsIntegration()
+            return GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_NOT_LOGGED_IN)
         }
 
         return retroAchievementsRepository.getGameUserAchievements(rom.retroAchievementsHash, session.isRetroAchievementsHardcoreModeEnabled).fold(
             onSuccess = { achievements ->
                 if (achievements.isEmpty()) {
-                    GameAchievementData.withDisabledRetroAchievementsIntegration()
+                    GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_NO_ACHIEVEMENTS)
                 } else {
                     val lockedAchievements = achievements.filter { !it.isUnlocked }.map { RASimpleAchievement(it.achievement.id, it.achievement.memoryAddress) }
                     val gameSummary = retroAchievementsRepository.getGameSummary(rom.retroAchievementsHash)
-                    GameAchievementData(
-                        isRetroAchievementsIntegrationEnabled = true,
+                    GameAchievementData.withRetroAchievementsIntegration(
                         lockedAchievements = lockedAchievements,
                         totalAchievementCount = achievements.size,
                         richPresencePatch = gameSummary?.richPresencePatch,
@@ -653,26 +652,34 @@ class EmulatorViewModel @Inject constructor(
                     )
                 }
             },
-            onFailure = { GameAchievementData.withDisabledRetroAchievementsIntegration() }
+            onFailure = {
+                // Maybe we have the game summary cached. Could allow the icon to be displayed, which looks better
+                val gameSummary = retroAchievementsRepository.getGameSummary(rom.retroAchievementsHash)
+                GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR, gameSummary?.icon)
+            }
         )
     }
 
     private fun onAchievementTriggered(achievementId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            retroAchievementsRepository.getAchievement(achievementId)
-                .onSuccess {
-                    if (it != null) {
-                        _achievementTriggeredEvent.emit(it)
-                        retroAchievementsRepository.awardAchievement(it, session.isRetroAchievementsHardcoreModeEnabled)
+            retroAchievementsRepository.getAchievement(achievementId).onSuccess { achievement ->
+                if (achievement != null) {
+                    retroAchievementsRepository.awardAchievement(achievement, session.isRetroAchievementsHardcoreModeEnabled).onSuccess {
+                        _achievementTriggeredEvent.emit(achievement)
                     }
                 }
+            }
         }
     }
 
     private fun startRetroAchievementsSession(rom: Rom) {
         sessionCoroutineScope.launch {
             val achievementData = getRomAchievementData(rom)
-            if (!achievementData.isRetroAchievementsIntegrationEnabled) {
+            if (achievementData.retroAchievementsIntegrationStatus != GameAchievementData.IntegrationStatus.ENABLED) {
+                if (achievementData.retroAchievementsIntegrationStatus == GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR) {
+                    _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
+                }
+
                 return@launch
             }
 
@@ -740,6 +747,7 @@ class EmulatorViewModel @Inject constructor(
         if (_emulatorState.value.isRunning()) {
             emulatorManager.stopEmulator()
         }
+        emulatorManager.cleanEmulator()
     }
 
     private class EmulatorSessionCoroutineScope : CoroutineScope {

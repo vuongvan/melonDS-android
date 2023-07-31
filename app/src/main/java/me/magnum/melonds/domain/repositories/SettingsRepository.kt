@@ -4,6 +4,7 @@ import android.net.Uri
 import io.reactivex.Observable
 import kotlinx.coroutines.flow.Flow
 import me.magnum.melonds.domain.model.*
+import me.magnum.melonds.domain.model.camera.DSiCameraSourceType
 import me.magnum.melonds.ui.Theme
 import java.util.*
 
@@ -31,6 +32,8 @@ interface SettingsRepository {
     fun getVideoFiltering(): Flow<VideoFiltering>
     fun isThreadedRenderingEnabled(): Boolean
     fun getFpsCounterPosition(): FpsCounterPosition
+    fun getDSiCameraSource(): DSiCameraSourceType
+    fun getDSiCameraStaticImage(): Uri?
 
     fun isSoundEnabled(): Boolean
     fun getAudioLatency(): AudioLatency
@@ -57,9 +60,11 @@ interface SettingsRepository {
     fun areCheatsEnabled(): Boolean
 
     fun observeTheme(): Observable<Theme>
-    fun observeRomIconFiltering(): Observable<RomIconFiltering>
+    fun observeRomIconFiltering(): Flow<RomIconFiltering>
     fun observeRomSearchDirectories(): Observable<Array<Uri>>
     fun observeSelectedLayoutId(): Observable<UUID>
+    fun observeDSiCameraSource(): Flow<DSiCameraSourceType>
+    fun observeDSiCameraStaticImage(): Flow<Uri?>
 
     fun setDsBiosDirectory(directoryUri: Uri)
     fun setDsiBiosDirectory(directoryUri: Uri)
