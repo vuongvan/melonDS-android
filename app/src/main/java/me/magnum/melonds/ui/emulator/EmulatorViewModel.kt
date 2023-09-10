@@ -8,6 +8,7 @@ import io.reactivex.Maybe
 import io.reactivex.Observable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
@@ -44,6 +45,7 @@ import me.magnum.melonds.domain.model.Rom
 import me.magnum.melonds.domain.model.RomInfo
 import me.magnum.melonds.domain.model.RuntimeBackground
 import me.magnum.melonds.domain.model.SaveStateSlot
+import me.magnum.melonds.domain.model.emulator.EmulatorSessionUpdateAction
 import me.magnum.melonds.domain.model.emulator.FirmwareLaunchResult
 import me.magnum.melonds.domain.model.emulator.RomLaunchResult
 import me.magnum.melonds.domain.model.retroachievements.GameAchievementData
@@ -89,11 +91,12 @@ class EmulatorViewModel @Inject constructor(
     private val saveStatesRepository: SaveStatesRepository,
     private val frameBufferProvider: FrameBufferProvider,
     private val emulatorManager: EmulatorManager,
+    private val emulatorSession: EmulatorSession,
     private val schedulers: Schedulers
 ) : ViewModel() {
 
     private val sessionCoroutineScope = EmulatorSessionCoroutineScope()
-    private lateinit var session: EmulatorSession
+    private var raSessionJob: Job? = null
 
     private val _currentSystemOrientation = MutableStateFlow<Orientation?>(null)
 
@@ -143,7 +146,7 @@ class EmulatorViewModel @Inject constructor(
                 if (rom != null) {
                     launchRom(rom)
                 } else {
-                    _emulatorState.value = EmulatorState.RomNotFoundError
+                    _emulatorState.value = EmulatorState.RomNotFoundError(romUri.toString())
                 }
             }
         }
@@ -157,13 +160,14 @@ class EmulatorViewModel @Inject constructor(
                 if (rom != null) {
                     launchRom(rom)
                 } else {
-                    _emulatorState.value = EmulatorState.RomNotFoundError
+                    _emulatorState.value = EmulatorState.RomNotFoundError(romPath)
                 }
             }
         }
     }
 
     private suspend fun launchRom(rom: Rom) = coroutineScope {
+        startEmulatorSession(EmulatorSession.SessionType.RomSession(rom))
         startObservingBackground()
         startObservingRuntimeInputLayoutConfiguration()
         startObservingRendererConfiguration()
@@ -191,6 +195,7 @@ class EmulatorViewModel @Inject constructor(
     fun loadFirmware(consoleType: ConsoleType) {
         viewModelScope.launch {
             resetEmulatorState(EmulatorState.LoadingFirmware)
+            startEmulatorSession(EmulatorSession.SessionType.FirmwareSession(consoleType))
             sessionCoroutineScope.launch {
                 startObservingBackground()
                 startObservingRuntimeInputLayoutConfiguration()
@@ -218,7 +223,7 @@ class EmulatorViewModel @Inject constructor(
     fun onSettingsChanged() {
         val currentState = _emulatorState.value
         sessionCoroutineScope.launch {
-            session.updateRetroAchievementsSettings(
+            val sessionUpdateActions = emulatorSession.updateRetroAchievementsSettings(
                 retroAchievementsRepository.isUserAuthenticated(),
                 settingsRepository.isRetroAchievementsHardcoreEnabled(),
             )
@@ -230,6 +235,8 @@ class EmulatorViewModel @Inject constructor(
                     // Do nothing
                 }
             }
+
+            dispatchSessionUpdateActions(sessionUpdateActions)
         }
     }
 
@@ -318,6 +325,7 @@ class EmulatorViewModel @Inject constructor(
                             }
                         }
                     }
+                    RomPauseMenuOption.VIEW_ACHIEVEMENTS -> _uiEvent.tryEmit(EmulatorUiEvent.ShowAchievementList)
                     RomPauseMenuOption.RESET -> resetEmulator()
                     RomPauseMenuOption.EXIT -> _uiEvent.tryEmit(EmulatorUiEvent.CloseEmulator)
                 }
@@ -338,7 +346,7 @@ class EmulatorViewModel @Inject constructor(
             return
         }
 
-        if (!session.areSaveStatesAllowed()) {
+        if (!emulatorSession.areSaveStatesAllowed()) {
             _toastEvent.tryEmit(ToastEvent.RewindNotAvailableWhileRAHardcoreModeEnabled)
             return
         }
@@ -386,7 +394,7 @@ class EmulatorViewModel @Inject constructor(
         val currentState = _emulatorState.value
         when (currentState) {
             is EmulatorState.RunningRom -> {
-                if (session.areSaveStatesAllowed()) {
+                if (emulatorSession.areSaveStatesAllowed()) {
                     sessionCoroutineScope.launch {
                         emulatorManager.pauseEmulator()
                         val quickSlot = saveStatesRepository.getRomQuickSaveStateSlot(currentState.rom)
@@ -412,7 +420,7 @@ class EmulatorViewModel @Inject constructor(
         val currentState = _emulatorState.value
         when (currentState) {
             is EmulatorState.RunningRom -> {
-                if (session.areSaveStatesAllowed()) {
+                if (emulatorSession.areSaveStatesAllowed()) {
                     sessionCoroutineScope.launch {
                         emulatorManager.pauseEmulator()
                         val quickSlot = saveStatesRepository.getRomQuickSaveStateSlot(currentState.rom)
@@ -496,9 +504,10 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    private suspend fun resetEmulatorState(newState: EmulatorState) {
+    private fun resetEmulatorState(newState: EmulatorState) {
         sessionCoroutineScope.notifyNewSessionStarted()
-        startEmulatorSession()
+        emulatorSession.reset()
+        raSessionJob = null
         _currentFps.value = null
         _emulatorState.value = newState
         _background.value = RuntimeBackground.None
@@ -626,7 +635,7 @@ class EmulatorViewModel @Inject constructor(
     }
 
     private suspend fun getRomEnabledCheats(romInfo: RomInfo): List<Cheat> {
-        if (!settingsRepository.areCheatsEnabled() || !session.areCheatsEnabled()) {
+        if (!settingsRepository.areCheatsEnabled() || !emulatorSession.areCheatsEnabled()) {
             return emptyList()
         }
 
@@ -638,7 +647,7 @@ class EmulatorViewModel @Inject constructor(
             return GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_NOT_LOGGED_IN)
         }
 
-        return retroAchievementsRepository.getGameUserAchievements(rom.retroAchievementsHash, session.isRetroAchievementsHardcoreModeEnabled).fold(
+        return retroAchievementsRepository.getGameUserAchievements(rom.retroAchievementsHash, emulatorSession.isRetroAchievementsHardcoreModeEnabled).fold(
             onSuccess = { achievements ->
                 if (achievements.isEmpty()) {
                     GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_NO_ACHIEVEMENTS)
@@ -665,7 +674,7 @@ class EmulatorViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             retroAchievementsRepository.getAchievement(achievementId).onSuccess { achievement ->
                 if (achievement != null) {
-                    retroAchievementsRepository.awardAchievement(achievement, session.isRetroAchievementsHardcoreModeEnabled).onSuccess {
+                    retroAchievementsRepository.awardAchievement(achievement, emulatorSession.isRetroAchievementsHardcoreModeEnabled).onSuccess {
                         _achievementTriggeredEvent.emit(achievement)
                     }
                 }
@@ -676,6 +685,7 @@ class EmulatorViewModel @Inject constructor(
     private fun startRetroAchievementsSession(rom: Rom) {
         sessionCoroutineScope.launch {
             val achievementData = getRomAchievementData(rom)
+            emulatorSession.updateRetroAchievementsIntegrationStatus(achievementData.retroAchievementsIntegrationStatus)
             if (achievementData.retroAchievementsIntegrationStatus != GameAchievementData.IntegrationStatus.ENABLED) {
                 if (achievementData.retroAchievementsIntegrationStatus == GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR) {
                     _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
@@ -684,28 +694,30 @@ class EmulatorViewModel @Inject constructor(
                 return@launch
             }
 
-            // Wait until the emulator has actually started
-            ensureEmulatorIsRunning().firstOrNull()
+            raSessionJob = launch {
+                // Wait until the emulator has actually started
+                ensureEmulatorIsRunning().firstOrNull()
 
-            val startResult = retroAchievementsRepository.startSession(rom.retroAchievementsHash)
-            if (!startResult.isSuccess) {
-                _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
-                return@launch
-            }
+                val startResult = retroAchievementsRepository.startSession(rom.retroAchievementsHash)
+                if (startResult.isFailure) {
+                    _raIntegrationEvent.tryEmit(RAIntegrationEvent.Failed(achievementData.icon))
+                } else {
+                    emulatorManager.setupAchievements(achievementData)
+                    _raIntegrationEvent.tryEmit(
+                        RAIntegrationEvent.Loaded(
+                            icon = achievementData.icon,
+                            unlockedAchievements = achievementData.unlockedAchievementCount,
+                            totalAchievements = achievementData.totalAchievementCount,
+                        )
+                    )
 
-            emulatorManager.setupAchievements(achievementData)
-            _raIntegrationEvent.tryEmit(
-                RAIntegrationEvent.Loaded(
-                    icon = achievementData.icon,
-                    unlockedAchievements = achievementData.unlockedAchievementCount,
-                    totalAchievements = achievementData.totalAchievementCount,
-                )
-            )
-            while (isActive) {
-                // TODO: Should we pause the session if the app goes to background? If so, how?
-                delay(2.minutes)
-                val richPresenceDescription = MelonEmulator.getRichPresenceStatus()
-                retroAchievementsRepository.sendSessionHeartbeat(rom.retroAchievementsHash, richPresenceDescription)
+                    while (isActive) {
+                        // TODO: Should we pause the session if the app goes to background? If so, how?
+                        delay(2.minutes)
+                        val richPresenceDescription = MelonEmulator.getRichPresenceStatus()
+                        retroAchievementsRepository.sendSessionHeartbeat(rom.retroAchievementsHash, richPresenceDescription)
+                    }
+                }
             }
         }
     }
@@ -721,10 +733,11 @@ class EmulatorViewModel @Inject constructor(
 
     private fun filterRomPauseMenuOption(option: RomPauseMenuOption): Boolean {
         return when (option) {
-            RomPauseMenuOption.REWIND -> settingsRepository.isRewindEnabled() && session.areSaveStatesAllowed()
-            RomPauseMenuOption.SAVE_STATE -> session.areSaveStatesAllowed()
-            RomPauseMenuOption.LOAD_STATE -> session.areSaveStatesAllowed()
-            RomPauseMenuOption.CHEATS -> session.areCheatsEnabled()
+            RomPauseMenuOption.REWIND -> settingsRepository.isRewindEnabled() && emulatorSession.areSaveStatesAllowed()
+            RomPauseMenuOption.SAVE_STATE -> emulatorSession.areSaveStatesAllowed()
+            RomPauseMenuOption.LOAD_STATE -> emulatorSession.areSaveStatesAllowed()
+            RomPauseMenuOption.CHEATS -> emulatorSession.areCheatsEnabled()
+            RomPauseMenuOption.VIEW_ACHIEVEMENTS -> emulatorSession.areRetroAchievementsEnabled()
             else -> true
         }
     }
@@ -733,19 +746,40 @@ class EmulatorViewModel @Inject constructor(
         return _emulatorState.filter { it.isRunning() }.take(1).map { }
     }
 
-    private suspend fun startEmulatorSession() {
+    private suspend fun startEmulatorSession(sessionType: EmulatorSession.SessionType) {
         val isUserAuthenticatedInRetroAchievements = retroAchievementsRepository.isUserAuthenticated()
         val isRetroAchievementsHardcoreModeEnabled = settingsRepository.isRetroAchievementsHardcoreEnabled()
-        session = EmulatorSession(
-            isUserAuthenticatedInRetroAchievements,
-            isRetroAchievementsHardcoreModeEnabled,
+        emulatorSession.startSession(
+            areRetroAchievementsEnabled = isUserAuthenticatedInRetroAchievements,
+            isRetroAchievementsHardcoreModeEnabled = isRetroAchievementsHardcoreModeEnabled,
+            sessionType = sessionType,
         )
+    }
+
+    private fun dispatchSessionUpdateActions(actions: List<EmulatorSessionUpdateAction>) {
+        actions.forEach {
+            when (it) {
+                EmulatorSessionUpdateAction.DisableRetroAchievements -> {
+                    emulatorManager.unloadAchievements()
+                    raSessionJob?.cancel()
+                    raSessionJob = null
+                }
+                EmulatorSessionUpdateAction.EnableRetroAchievements -> {
+                    (emulatorSession.currentSessionType() as? EmulatorSession.SessionType.RomSession)?.rom?.let { currentRom ->
+                        startRetroAchievementsSession(currentRom)
+                    }
+                }
+                EmulatorSessionUpdateAction.NotifyRetroAchievementsModeSwitch -> {
+                    _toastEvent.tryEmit(ToastEvent.CannotSwitchRetroAchievementsMode)
+                }
+            }
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
         sessionCoroutineScope.cancel()
-        if (_emulatorState.value.isRunning()) {
+        if (_emulatorState.value.isRunning() || _emulatorState.value.isLoading()) {
             emulatorManager.stopEmulator()
         }
         emulatorManager.cleanEmulator()

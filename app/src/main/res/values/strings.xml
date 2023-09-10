@@ -34,7 +34,7 @@
     <string name="size_gb">GB</string>
 
     <string name="error_rom_not_found">Could not find ROM</string>
-    <string name="error_rom_not_found_info">The ROM you have selected has not been found. Make sure the selected ROM can be found in the current ROM search directory.</string>
+    <string name="error_rom_not_found_info">The ROM you have selected has not been found. Make sure the selected ROM can be found in the current ROM search directory.\n%1$s</string>
     <string name="error_load_rom">Could not load ROM</string>
     <string name="error_load_rom_message">There was a problem loading the ROM. Make sure it\'s not corrupted and try again.</string>
     <string name="error_load_firmware">Could not load the firmware</string>
@@ -119,6 +119,7 @@
     <string name="choose_component">Choose component</string>
 
     <string name="pause">Pause</string>
+    <string name="achievements">Achievements</string>
     <string name="reset">Reset</string>
     <string name="exit">Exit</string>
 
@@ -319,6 +320,7 @@
     <string name="retro_achievements_login_error_short">There was a problem when trying to login</string>
     <string name="retro_achievements_load_error">There was a problem when trying to load the achievements for this game. Make sure you are connected to the internet and try again later</string>
     <string name="retro_achievements_no_achievements">No RetroAchievements were found for this game</string>
+    <string name="retro_achievements_relaunch_to_apply_settings">Relaunch the ROM to apply the new RetroAchievements settings</string>
     <string name="username">Username</string>
     <string name="password">Password</string>
     <string name="retry">Retry</string>

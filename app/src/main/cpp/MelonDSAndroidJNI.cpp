@@ -7,7 +7,6 @@
 #include <cstdlib>
 #include <MelonDS.h>
 #include <InputAndroid.h>
-#include "retroachievements/RAAchievement.h"
 #include <android/asset_manager_jni.h>
 #include "UriFileHandler.h"
 #include "JniEnvHandler.h"
@@ -15,6 +14,7 @@
 #include "MelonDSAndroidInterface.h"
 #include "MelonDSAndroidConfiguration.h"
 #include "MelonDSAndroidCameraHandler.h"
+#include "RAAchievementMapper.h"
 
 #define MAX_CHEAT_SIZE (2*64)
 
@@ -147,35 +147,8 @@ Java_me_magnum_melonds_MelonEmulator_setupCheats(JNIEnv* env, jobject thiz, jobj
 JNIEXPORT void JNICALL
 Java_me_magnum_melonds_MelonEmulator_setupAchievements(JNIEnv* env, jobject thiz, jobjectArray achievements, jstring richPresenceScript)
 {
-    jsize achievementCount = env->GetArrayLength(achievements);
-    if (achievementCount < 1)
-        return;
-
     std::list<RetroAchievements::RAAchievement> internalAchievements;
-
-    jclass cheatClass = env->GetObjectClass(env->GetObjectArrayElement(achievements, 0));
-    jfieldID idField = env->GetFieldID(cheatClass, "id", "J");
-    jfieldID memoryAddressField = env->GetFieldID(cheatClass, "memoryAddress", "Ljava/lang/String;");
-
-    for (int i = 0; i < achievementCount; ++i)
-    {
-        jobject achievement = env->GetObjectArrayElement(achievements, i);
-        jlong id = env->GetLongField(achievement, idField);
-        jstring memoryAddress = (jstring) env->GetObjectField(achievement, memoryAddressField);
-        jboolean isStringCopy;
-        const char* codeString = env->GetStringUTFChars(memoryAddress, &isStringCopy);
-
-        RetroAchievements::RAAchievement internalAchievement = {
-            .id = (long) id,
-            .memoryAddress = std::string(codeString),
-        };
-
-        if (isStringCopy)
-            env->ReleaseStringUTFChars(memoryAddress, codeString);
-
-        internalAchievements.push_back(internalAchievement);
-    }
-
+    mapAchievementsFromJava(env, achievements, internalAchievements);
 
     std::string* richPresence = nullptr;
 
@@ -191,6 +164,15 @@ Java_me_magnum_melonds_MelonEmulator_setupAchievements(JNIEnv* env, jobject thiz
 
     MelonDSAndroid::setupAchievements(internalAchievements, richPresence);
     delete richPresence;
+}
+
+JNIEXPORT void JNICALL
+Java_me_magnum_melonds_MelonEmulator_unloadAchievements(JNIEnv* env, jobject thiz, jobjectArray achievements)
+{
+    std::list<RetroAchievements::RAAchievement> internalAchievements;
+    mapAchievementsFromJava(env, achievements, internalAchievements);
+
+    MelonDSAndroid::unloadAchievements(internalAchievements);
 }
 
 JNIEXPORT jstring JNICALL
@@ -406,16 +388,19 @@ Java_me_magnum_melonds_MelonEmulator_getRewindWindow(JNIEnv* env, jobject thiz) 
 JNIEXPORT void JNICALL
 Java_me_magnum_melonds_MelonEmulator_stopEmulation(JNIEnv* env, jobject thiz)
 {
-    pthread_mutex_lock(&emuThreadMutex);
-    stop = true;
-    paused = false;
-    started = false;
-    pthread_cond_broadcast(&emuThreadCond);
-    pthread_mutex_unlock(&emuThreadMutex);
+    if (started)
+    {
+        pthread_mutex_lock(&emuThreadMutex);
+        stop = true;
+        paused = false;
+        started = false;
+        pthread_cond_broadcast(&emuThreadCond);
+        pthread_mutex_unlock(&emuThreadMutex);
 
-    pthread_join(emuThread, NULL);
-    pthread_mutex_destroy(&emuThreadMutex);
-    pthread_cond_destroy(&emuThreadCond);
+        pthread_join(emuThread, NULL);
+        pthread_mutex_destroy(&emuThreadMutex);
+        pthread_cond_destroy(&emuThreadCond);
+    }
 
     env->DeleteGlobalRef(globalAssetManager);
     env->DeleteGlobalRef(globalCameraManager);
