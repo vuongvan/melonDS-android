@@ -58,7 +58,7 @@ android {
         }
     }
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.1"
+        kotlinCompilerExtensionVersion = "1.5.7"
     }
 
     flavorDimensions.add("version")
@@ -154,7 +154,6 @@ dependencies {
         implementation(splashscreen)
         implementation(swipeRefreshLayout)
         implementation(work)
-        implementation(workRxJava)
         implementation(material)
     }
 
