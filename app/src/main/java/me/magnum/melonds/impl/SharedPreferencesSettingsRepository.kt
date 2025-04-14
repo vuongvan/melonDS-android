@@ -9,7 +9,6 @@ import android.util.Log
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
-import com.google.gson.Gson
 import io.reactivex.Observable
 import io.reactivex.subjects.PublishSubject
 import kotlinx.coroutines.CoroutineScope
@@ -23,6 +22,10 @@ import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.shareIn
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import me.magnum.melonds.common.uridelegates.UriHandler
 import me.magnum.melonds.domain.model.AudioBitrate
 import me.magnum.melonds.domain.model.AudioInterpolation
@@ -32,11 +35,9 @@ import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.EmulatorConfiguration
 import me.magnum.melonds.domain.model.FirmwareConfiguration
 import me.magnum.melonds.domain.model.FpsCounterPosition
-import me.magnum.melonds.domain.model.LayoutConfiguration
 import me.magnum.melonds.domain.model.MacAddress
 import me.magnum.melonds.domain.model.MicSource
 import me.magnum.melonds.domain.model.RendererConfiguration
-import me.magnum.melonds.domain.model.Rom
 import me.magnum.melonds.domain.model.RomIconFiltering
 import me.magnum.melonds.domain.model.SaveStateLocation
 import me.magnum.melonds.domain.model.SizeUnit
@@ -45,23 +46,22 @@ import me.magnum.melonds.domain.model.SortingOrder
 import me.magnum.melonds.domain.model.VideoFiltering
 import me.magnum.melonds.domain.model.VideoRenderer
 import me.magnum.melonds.domain.model.camera.DSiCameraSourceType
+import me.magnum.melonds.domain.model.layout.LayoutConfiguration
+import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.repositories.SettingsRepository
-import me.magnum.melonds.extensions.isSustainedPerformanceModeAvailable
+import me.magnum.melonds.impl.dtos.input.ControllerConfigurationDto
 import me.magnum.melonds.ui.Theme
 import me.magnum.melonds.utils.enumValueOfIgnoreCase
 import java.io.File
-import java.io.FileReader
-import java.io.IOException
-import java.io.OutputStreamWriter
 import java.util.UUID
 import kotlin.math.pow
 
 class SharedPreferencesSettingsRepository(
-        private val context: Context,
-        private val preferences: SharedPreferences,
-        private val gson: Gson,
-        private val uriHandler: UriHandler,
-        preferencesCoroutineScope: CoroutineScope,
+    private val context: Context,
+    private val preferences: SharedPreferences,
+    private val json: Json,
+    private val uriHandler: UriHandler,
+    preferencesCoroutineScope: CoroutineScope,
 ) : SettingsRepository, OnSharedPreferenceChangeListener {
 
     companion object {
@@ -170,8 +170,7 @@ class SharedPreferencesSettingsRepository(
     }
 
     override fun isSustainedPerformanceModeEnabled(): Boolean {
-        val defaultValue = context.isSustainedPerformanceModeAvailable()
-        return preferences.getBoolean("enable_sustained_performance", defaultValue)
+        return preferences.getBoolean("enable_sustained_performance", false)
     }
 
     override fun getRomSearchDirectories(): Array<Uri> {
@@ -186,7 +185,7 @@ class SharedPreferencesSettingsRepository(
     }
 
     override fun getRomIconFiltering(): RomIconFiltering {
-        val romIconFilteringPreference = preferences.getString("rom_icon_filtering", "linear")!!
+        val romIconFilteringPreference = preferences.getString("rom_icon_filtering", "none")!!
         return enumValueOfIgnoreCase(romIconFilteringPreference)
     }
 
@@ -281,7 +280,7 @@ class SharedPreferencesSettingsRepository(
 
     override fun getVideoFiltering(): Flow<VideoFiltering> {
         return getOrCreatePreferenceSharedFlow("video_filtering") {
-            val filteringPreference = preferences.getString("video_filtering", "linear")!!
+            val filteringPreference = preferences.getString("video_filtering", "none")!!
             VideoFiltering.valueOf(filteringPreference.uppercase())
         }
     }
@@ -398,16 +397,16 @@ class SharedPreferencesSettingsRepository(
         return uriHandler.getUriTreeDocument(rom.parentTreeUri)?.uri ?: throw Exception("Could not determine ROMs parent document")
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
     override fun getControllerConfiguration(): ControllerConfiguration {
         if (controllerConfiguration == null) {
             try {
                 val configFile = File(context.filesDir, CONTROLLER_CONFIG_FILE)
-                FileReader(configFile).use {
-                    val loadedConfiguration = gson.fromJson(it, ControllerConfiguration::class.java)
-                    // Create new instance to validate loaded configuration
-                    controllerConfiguration = ControllerConfiguration(loadedConfiguration?.inputMapper ?: emptyList())
+                configFile.inputStream().use {
+                    val loadedConfiguration = json.decodeFromStream<ControllerConfigurationDto>(it)
+                    controllerConfiguration = loadedConfiguration.toControllerConfiguration()
                 }
-            } catch (e: IOException) {
+            } catch (e: Exception) {
                 Log.w(TAG, "Failed to load controller configuration", e)
                 controllerConfiguration = ControllerConfiguration.empty()
             }
@@ -497,16 +496,17 @@ class SharedPreferencesSettingsRepository(
         }
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
     override fun setControllerConfiguration(controllerConfiguration: ControllerConfiguration) {
         this.controllerConfiguration = controllerConfiguration
 
         try {
             val configFile = File(context.filesDir, CONTROLLER_CONFIG_FILE)
-            OutputStreamWriter(configFile.outputStream()).use {
-                val configJson = gson.toJson(controllerConfiguration)
-                it.write(configJson)
+            val dto = ControllerConfigurationDto.fromControllerConfiguration(controllerConfiguration)
+            configFile.outputStream().use {
+                json.encodeToStream(dto, it)
             }
-        } catch (e: IOException) {
+        } catch (e: Exception) {
             Log.w(TAG, "Failed to save controller configuration", e)
         }
     }

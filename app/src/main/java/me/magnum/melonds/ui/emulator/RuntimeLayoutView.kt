@@ -9,9 +9,10 @@ import androidx.core.view.isVisible
 import dagger.hilt.android.AndroidEntryPoint
 import me.magnum.melonds.common.vibration.TouchVibrator
 import me.magnum.melonds.domain.model.Input
-import me.magnum.melonds.domain.model.LayoutComponent
+import me.magnum.melonds.domain.model.layout.LayoutComponent
 import me.magnum.melonds.ui.common.LayoutView
 import me.magnum.melonds.ui.emulator.input.*
+import me.magnum.melonds.ui.emulator.input.view.ToggleableImageView
 import me.magnum.melonds.ui.emulator.model.RuntimeInputLayoutConfiguration
 import javax.inject.Inject
 
@@ -39,22 +40,29 @@ class RuntimeLayoutView(context: Context, attrs: AttributeSet?) : LayoutView(con
 
     fun toggleSoftInputVisibility() {
         isSoftInputVisible = !isSoftInputVisible
+        setLayoutComponentToggleState(LayoutComponent.BUTTON_TOGGLE_SOFT_INPUT, isSoftInputVisible)
         updateSoftInputVisibility()
     }
 
     fun swapScreens() {
         areScreensSwapped = !areScreensSwapped
-        updateInputs()
+        updateScreenInputs()
     }
 
     fun areScreensSwapped(): Boolean {
         return areScreensSwapped
     }
 
+    fun setLayoutComponentToggleState(layoutComponent: LayoutComponent, isEnabled: Boolean) {
+        val toggleableImageView = getLayoutComponentView(layoutComponent)?.view as? ToggleableImageView ?: return
+        toggleableImageView.setToggleState(isEnabled)
+    }
+
     fun instantiateLayout(runtimeLayout: RuntimeInputLayoutConfiguration) {
         currentRuntimeLayout = runtimeLayout
         instantiateLayout(runtimeLayout.layout)
         updateInputs()
+        setLayoutComponentToggleState(LayoutComponent.BUTTON_TOGGLE_SOFT_INPUT, isSoftInputVisible)
     }
 
     private fun updateInputs() {
@@ -82,6 +90,7 @@ class RuntimeLayoutView(context: Context, attrs: AttributeSet?) : LayoutView(con
                 getLayoutComponentView(LayoutComponent.BUTTON_RESET)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.RESET, enableHapticFeedback, touchVibrator))
                 getLayoutComponentView(LayoutComponent.BUTTON_PAUSE)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.PAUSE, enableHapticFeedback, touchVibrator))
                 getLayoutComponentView(LayoutComponent.BUTTON_FAST_FORWARD_TOGGLE)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.FAST_FORWARD, enableHapticFeedback, touchVibrator))
+                getLayoutComponentView(LayoutComponent.BUTTON_MICROPHONE_TOGGLE)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.MICROPHONE, enableHapticFeedback, touchVibrator))
                 getLayoutComponentView(LayoutComponent.BUTTON_TOGGLE_SOFT_INPUT)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.TOGGLE_SOFT_INPUT, enableHapticFeedback, touchVibrator))
                 getLayoutComponentView(LayoutComponent.BUTTON_SWAP_SCREENS)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.SWAP_SCREENS, enableHapticFeedback, touchVibrator))
                 getLayoutComponentView(LayoutComponent.BUTTON_QUICK_SAVE)?.view?.setOnTouchListener(SingleButtonInputHandler(it, Input.QUICK_SAVE, enableHapticFeedback, touchVibrator))
@@ -108,6 +117,10 @@ class RuntimeLayoutView(context: Context, attrs: AttributeSet?) : LayoutView(con
             }
         }
 
+        updateScreenInputs()
+    }
+
+    private fun updateScreenInputs() {
         val (touchScreenComponent, nonTouchScreenComponent) = if (areScreensSwapped) {
             LayoutComponent.TOP_SCREEN to LayoutComponent.BOTTOM_SCREEN
         } else {

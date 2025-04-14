@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.json.Json
 import me.magnum.melonds.common.romprocessors.RomFileProcessorFactory
 import me.magnum.melonds.common.uridelegates.UriHandler
 import me.magnum.melonds.common.vibration.Api26VibratorDelegate
@@ -26,8 +27,8 @@ import me.magnum.melonds.domain.services.ConfigurationDirectoryVerifier
 import me.magnum.melonds.domain.services.DSiNandManager
 import me.magnum.melonds.impl.AndroidDSiNandManager
 import me.magnum.melonds.impl.*
+import me.magnum.melonds.impl.layout.UILayoutProvider
 import me.magnum.melonds.impl.romprocessors.Api24RomFileProcessorFactory
-import me.magnum.melonds.impl.romprocessors.OldRomFileProcessorFactory
 import me.magnum.melonds.ui.romdetails.RomDetailsUiMapper
 import me.magnum.rcheevosapi.RAApi
 import me.magnum.rcheevosapi.RAUserAuthStore
@@ -38,8 +39,8 @@ import javax.inject.Singleton
 object MelonModule {
     @Provides
     @Singleton
-    fun provideSettingsRepository(@ApplicationContext context: Context, sharedPreferences: SharedPreferences, gson: Gson, uriHandler: UriHandler): SettingsRepository {
-        return SharedPreferencesSettingsRepository(context, sharedPreferences, gson, uriHandler, CoroutineScope(Dispatchers.IO))
+    fun provideSettingsRepository(@ApplicationContext context: Context, sharedPreferences: SharedPreferences, json: Json, uriHandler: UriHandler): SettingsRepository {
+        return SharedPreferencesSettingsRepository(context, sharedPreferences, json, uriHandler, CoroutineScope(Dispatchers.IO))
     }
 
     @Provides
@@ -62,8 +63,8 @@ object MelonModule {
 
     @Provides
     @Singleton
-    fun provideLayoutsRepository(@ApplicationContext context: Context, gson: Gson, defaultLayoutProvider: DefaultLayoutProvider): LayoutsRepository {
-        return InternalLayoutsRepository(context, gson, defaultLayoutProvider)
+    fun provideLayoutsRepository(@ApplicationContext context: Context, gson: Gson): LayoutsRepository {
+        return InternalLayoutsRepository(context, gson)
     }
 
     @Provides
@@ -105,11 +106,7 @@ object MelonModule {
     @Provides
     @Singleton
     fun provideFileRomProcessorFactory(@ApplicationContext context: Context, uriHandler: UriHandler, ndsRomCache: NdsRomCache): RomFileProcessorFactory {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            Api24RomFileProcessorFactory(context, uriHandler, ndsRomCache)
-        } else {
-            OldRomFileProcessorFactory(context, uriHandler, ndsRomCache)
-        }
+        return Api24RomFileProcessorFactory(context, uriHandler, ndsRomCache)
     }
 
     @Provides
@@ -150,8 +147,13 @@ object MelonModule {
 
     @Provides
     @Singleton
-    fun provideDefaultLayoutBuilder(@ApplicationContext context: Context, screenUnitsConverter: ScreenUnitsConverter): DefaultLayoutProvider {
-        return DefaultLayoutProvider(context, screenUnitsConverter)
+    fun provideDefaultLayoutBuilder(screenUnitsConverter: ScreenUnitsConverter): DefaultLayoutProvider {
+        return DefaultLayoutProvider(screenUnitsConverter)
+    }
+
+    @Provides
+    fun provideUILayoutProvider(defaultLayoutProvider: DefaultLayoutProvider): UILayoutProvider {
+        return UILayoutProvider(defaultLayoutProvider)
     }
 
     @Provides

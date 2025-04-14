@@ -1,18 +1,15 @@
 plugins {
-    id("org.jetbrains.kotlin.jvm")
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
 }
 
 dependencies {
-    with(Dependencies.Modules) {
-        implementation(project(common))
-    }
+    implementation(projects.common)
 
-    with(Dependencies.ThirdParty) {
-        implementation(gson)
-        implementation(okHttp)
-    }
+    implementation(libs.kotlin.serialization)
+    implementation(libs.okhttp)
 }
