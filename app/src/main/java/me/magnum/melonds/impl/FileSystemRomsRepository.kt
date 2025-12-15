@@ -6,19 +6,24 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import io.reactivex.disposables.CompositeDisposable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import me.magnum.melonds.common.romprocessors.RomFileProcessorFactory
+import me.magnum.melonds.domain.model.RomScanningStatus
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.rom.config.RomConfig
-import me.magnum.melonds.domain.model.RomScanningStatus
 import me.magnum.melonds.domain.repositories.RomsRepository
 import me.magnum.melonds.domain.repositories.SettingsRepository
-import me.magnum.melonds.extensions.addTo
 import me.magnum.melonds.impl.dtos.rom.RomDto
 import me.magnum.melonds.utils.FileUtils
 import me.magnum.melonds.utils.SubjectSharedFlow
@@ -26,8 +31,9 @@ import java.io.File
 import java.io.FileReader
 import java.io.OutputStreamWriter
 import java.lang.reflect.Type
-import java.util.*
+import java.util.Date
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration
 
 class FileSystemRomsRepository(
         private val context: Context,
@@ -38,11 +44,11 @@ class FileSystemRomsRepository(
 
     companion object {
         private const val TAG = "FSRomsRepository"
+        private const val EXTERNAL_STORAGE_PROVIDER_AUTHORITY = "com.android.externalstorage.documents"
         private const val ROM_DATA_FILE = "rom_data.json"
     }
 
-    private val coroutineScope = CoroutineScope(Dispatchers.Main)
-    private val disposables = CompositeDisposable()
+    private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private val romListType: Type = object : TypeToken<List<RomDto>>(){}.type
     private val romsChannel = SubjectSharedFlow<List<Rom>>()
     private val scanningStatusSubject = MutableStateFlow(RomScanningStatus.NOT_SCANNING)
@@ -51,14 +57,16 @@ class FileSystemRomsRepository(
 
     init {
         coroutineScope.launch {
-            romsChannel.onEach {
+            romsChannel.collect {
                 saveRomData(it)
-            }.collect()
+            }
         }
 
-        settingsRepository.observeRomSearchDirectories()
-                .subscribe { directories -> onRomSearchDirectoriesChanged(directories) }
-                .addTo(disposables)
+        coroutineScope.launch {
+            settingsRepository.observeRomSearchDirectories().collectLatest { directories ->
+                onRomSearchDirectoriesChanged(directories)
+            }
+        }
     }
 
     private fun onRomSearchDirectoriesChanged(searchDirectories: Array<Uri>) {
@@ -93,9 +101,25 @@ class FileSystemRomsRepository(
     }
 
     override suspend fun getRomAtUri(uri: Uri): Rom? {
-        return getRoms().first().find { rom ->
-            rom.uri == uri
+        val exactRom = if (uri.authority == EXTERNAL_STORAGE_PROVIDER_AUTHORITY) {
+            getRoms().first().find { rom ->
+                rom.uri == uri
+            }
+        } else {
+            // Try to find the ROM by obtaining the file path from the URI and checking against known ROMs. This may not always work since there are multiple entry points to
+            // the user-accessible storage (/storage/emulated/0, /mnt/user/0, /sdcard). This can be explored further in the future to see if different path prefixes can be
+            // removed to make this approach more reliable
+            FileUtils.getAbsolutePathFromSingleUri(context, uri)?.let {
+                getRomAtPath(it)
+            }
         }
+
+        if (exactRom != null)
+            return exactRom
+
+        // ROM is not known. Create a new ROM from the URI
+        val externalRom = romFileProcessorFactory.getFileRomProcessorForDocument(uri)?.getRomFromUri(uri, null)
+        return externalRom
     }
 
     override fun updateRomConfig(rom: Rom, romConfig: RomConfig) {
@@ -117,8 +141,19 @@ class FileSystemRomsRepository(
         onRomsChanged()
     }
 
+    override fun addRomPlayTime(rom: Rom, playTime: Duration) {
+        val romIndex = roms.indexOfFirst { it.hasSameFileAsRom(rom) }
+        if (romIndex < 0)
+            return
+
+        val romInList = roms[romIndex]
+        val updatedRom = romInList.copy(totalPlayTime = romInList.totalPlayTime + playTime)
+        roms[romIndex] = updatedRom
+        onRomsChanged()
+    }
+
     override fun rescanRoms() {
-        coroutineScope.launch(Dispatchers.IO) {
+        coroutineScope.launch {
             scanningStatusSubject.emit(RomScanningStatus.SCANNING)
 
             scanForNewRoms().collect {
@@ -163,7 +198,7 @@ class FileSystemRomsRepository(
         romsChannel.tryEmit(roms)
     }
 
-    private suspend fun loadCachedRoms() = withContext(Dispatchers.IO) {
+    private suspend fun loadCachedRoms() {
         scanningStatusSubject.emit(RomScanningStatus.SCANNING)
 
         val cachedRoms = getCachedRoms().filter {
@@ -224,9 +259,9 @@ class FileSystemRomsRepository(
             }
             val romsJson = gson.toJson(romDtos)
 
-            val output = OutputStreamWriter(cacheFile.outputStream())
-            output.write(romsJson)
-            output.close()
+            OutputStreamWriter(cacheFile.outputStream()).use {
+                it.write(romsJson)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to save ROM data", e)
         }

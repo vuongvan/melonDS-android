@@ -133,8 +133,19 @@
             android:exported="false">
         </activity>
         <activity
+            android:name=".ui.layouts.ExternalLayoutListActivity"
+            android:label="@string/external_screen_layout"
+            android:parentActivityName=".ui.settings.SettingsActivity"
+            android:exported="false">
+        </activity>
+        <activity
             android:name=".ui.layouts.LayoutSelectorActivity"
             android:label="@string/layouts"
+            android:exported="false">
+        </activity>
+        <activity
+            android:name=".ui.layouts.ExternalLayoutSelectorActivity"
+            android:label="@string/external_screen_layout"
             android:exported="false">
         </activity>
         <activity
@@ -154,6 +165,10 @@
             android:authorities="${applicationId}.androidx-startup"
             android:exported="false"
             tools:node="merge">
+
+            <meta-data
+                    android:name="me.magnum.melonds.initializer.AppForegroundStateTrackerInitializer"
+                    android:value="androidx.startup" />
 
             <meta-data
                 android:name="me.magnum.melonds.initializer.CoilInitializer"

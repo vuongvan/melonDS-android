@@ -3,11 +3,16 @@ package me.magnum.melonds.ui.emulator
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
-import android.opengl.GLSurfaceView
+import android.hardware.display.DisplayManager
+import android.hardware.input.InputManager
 import android.os.Bundle
+import android.util.Log
+import android.view.Choreographer
+import android.view.Display
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
 import android.widget.RelativeLayout
@@ -34,26 +39,28 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.constraintlayout.widget.ConstraintLayout
-import androidx.core.net.toUri
+import androidx.core.content.ContextCompat
+import androidx.core.content.getSystemService
 import androidx.core.os.ConfigurationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.isGone
 import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
+import androidx.lifecycle.DEFAULT_ARGS_KEY
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.lifecycle.viewmodel.MutableCreationExtras
+import androidx.recyclerview.widget.DividerItemDecoration
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import com.squareup.picasso.Picasso
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
@@ -62,6 +69,7 @@ import me.magnum.melonds.R
 import me.magnum.melonds.common.PermissionHandler
 import me.magnum.melonds.databinding.ActivityEmulatorBinding
 import me.magnum.melonds.domain.model.ConsoleType
+import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.FpsCounterPosition
 import me.magnum.melonds.domain.model.Rect
 import me.magnum.melonds.domain.model.SaveStateSlot
@@ -69,15 +77,15 @@ import me.magnum.melonds.domain.model.layout.LayoutComponent
 import me.magnum.melonds.domain.model.layout.ScreenFold
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.model.ui.Orientation
-import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.extensions.insetsControllerCompat
-import me.magnum.melonds.extensions.parcelable
 import me.magnum.melonds.extensions.setLayoutOrientation
 import me.magnum.melonds.impl.emulator.LifecycleOwnerProvider
+import me.magnum.melonds.impl.system.AppForegroundStateObserver
 import me.magnum.melonds.parcelables.RomInfoParcelable
 import me.magnum.melonds.parcelables.RomParcelable
 import me.magnum.melonds.ui.cheats.CheatsActivity
 import me.magnum.melonds.ui.emulator.component.EmulatorOverlayTracker
+import me.magnum.melonds.ui.emulator.input.ConnectedControllerManager
 import me.magnum.melonds.ui.emulator.input.FrontendInputHandler
 import me.magnum.melonds.ui.emulator.input.INativeInputListener
 import me.magnum.melonds.ui.emulator.input.InputProcessor
@@ -85,16 +93,20 @@ import me.magnum.melonds.ui.emulator.input.MelonTouchHandler
 import me.magnum.melonds.ui.emulator.model.EmulatorOverlay
 import me.magnum.melonds.ui.emulator.model.EmulatorState
 import me.magnum.melonds.ui.emulator.model.EmulatorUiEvent
+import me.magnum.melonds.ui.emulator.model.LaunchArgs
 import me.magnum.melonds.ui.emulator.model.PauseMenu
 import me.magnum.melonds.ui.emulator.model.PopupEvent
 import me.magnum.melonds.ui.emulator.model.RuntimeInputLayoutConfiguration
 import me.magnum.melonds.ui.emulator.model.ToastEvent
+import me.magnum.melonds.ui.emulator.render.ExternalPresentation
+import me.magnum.melonds.ui.emulator.render.FrameRenderCoordinator
 import me.magnum.melonds.ui.emulator.rewind.EdgeSpacingDecorator
 import me.magnum.melonds.ui.emulator.rewind.RewindSaveStateAdapter
 import me.magnum.melonds.ui.emulator.rewind.model.RewindWindow
-import me.magnum.melonds.ui.emulator.rom.SaveStateListAdapter
+import me.magnum.melonds.ui.emulator.rom.SaveStateAdapter
 import me.magnum.melonds.ui.emulator.ui.AchievementListDialog
 import me.magnum.melonds.ui.emulator.ui.AchievementPopupUi
+import me.magnum.melonds.ui.emulator.ui.QuickSettingsDialog
 import me.magnum.melonds.ui.emulator.ui.RAIntegrationEventUi
 import me.magnum.melonds.ui.settings.SettingsActivity
 import me.magnum.melonds.ui.theme.MelonTheme
@@ -102,7 +114,7 @@ import java.text.SimpleDateFormat
 import javax.inject.Inject
 
 @AndroidEntryPoint
-class EmulatorActivity : AppCompatActivity() {
+class EmulatorActivity : AppCompatActivity(), Choreographer.FrameCallback {
     companion object {
         const val KEY_ROM = "rom"
         const val KEY_PATH = "PATH"
@@ -125,10 +137,18 @@ class EmulatorActivity : AppCompatActivity() {
     }
 
     private lateinit var binding: ActivityEmulatorBinding
-    val viewModel: EmulatorViewModel by viewModels()
-
-    @Inject
-    lateinit var settingsRepository: SettingsRepository
+    val viewModel: EmulatorViewModel by viewModels(
+        extrasProducer = {
+            val extras = MutableCreationExtras(defaultViewModelCreationExtras)
+            // Inject intent data into view-model creation extras to make it accessible through the SavedStateHandle
+            intent.data?.let { dataUri ->
+                val existingExtras = extras[DEFAULT_ARGS_KEY]?.let { Bundle(it) } ?: Bundle()
+                existingExtras.putString(KEY_URI, dataUri.toString())
+                extras[DEFAULT_ARGS_KEY] = existingExtras
+            }
+            extras
+        }
+    )
 
     @Inject
     lateinit var picasso: Picasso
@@ -139,8 +159,39 @@ class EmulatorActivity : AppCompatActivity() {
     @Inject
     lateinit var lifecycleOwnerProvider: LifecycleOwnerProvider
 
-    private val currentOpenGlContext = MutableStateFlow<Long?>(null)
-    private lateinit var dsRenderer: DSRenderer
+    @Inject
+    lateinit var appForegroundStateObserver: AppForegroundStateObserver
+
+    private var presentation: ExternalPresentation? = null
+
+    private lateinit var displayManager: DisplayManager
+    private val displayListener = object : DisplayManager.DisplayListener {
+
+        override fun onDisplayAdded(displayId: Int) {
+            runOnUiThread {
+                showExternalDisplay()
+            }
+        }
+
+        override fun onDisplayRemoved(displayId: Int) {
+            runOnUiThread {
+                presentation?.let { pres ->
+                    if (pres.display.displayId == displayId) {
+                        pres.dismiss()
+                        presentation = null
+                    }
+                }
+            }
+        }
+
+        override fun onDisplayChanged(displayId: Int) {
+            // No-op
+        }
+    }
+
+    private val connectedControllerManager = ConnectedControllerManager()
+    private lateinit var frameRenderCoordinator: FrameRenderCoordinator
+    private lateinit var mainScreenRenderer: DSRenderer
     private lateinit var melonTouchHandler: MelonTouchHandler
     private lateinit var nativeInputListener: INativeInputListener
     private val frontendInputHandler = object : FrontendInputHandler() {
@@ -188,10 +239,12 @@ class EmulatorActivity : AppCompatActivity() {
         override fun onRewind() {
             viewModel.onOpenRewind()
         }
+
+        override fun onRefreshExternalScreen() {
+        }
     }
     private val settingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         viewModel.onSettingsChanged()
-        setupInputHandling()
         setupSustainedPerformanceMode()
         setupFpsCounter()
         viewModel.resumeEmulator()
@@ -218,7 +271,7 @@ class EmulatorActivity : AppCompatActivity() {
         closeRewindWindow()
     }
     private val showAchievementList = mutableStateOf(false)
-    private var emulatorReady = false
+    private val showQuickSettings = mutableStateOf(false)
 
     private val activeOverlays = EmulatorOverlayTracker(
         onOverlaysCleared = {
@@ -239,19 +292,16 @@ class EmulatorActivity : AppCompatActivity() {
 
         onBackPressedDispatcher.addCallback(backPressedCallback)
 
+        frameRenderCoordinator = FrameRenderCoordinator()
         melonTouchHandler = MelonTouchHandler()
-        dsRenderer = DSRenderer(
-            context = this,
-            onGlContextReady = {
-                currentOpenGlContext.value = it
-            }
-        )
+        mainScreenRenderer = DSRenderer(this)
         binding.surfaceMain.apply {
-            setEGLContextClientVersion(3)
-            preserveEGLContextOnPause = true
-            setRenderer(dsRenderer)
-            renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+            frameRenderCoordinator.addSurface(this)
+            setRenderer(mainScreenRenderer)
         }
+
+        displayManager = getSystemService<DisplayManager>()!!
+        displayManager.registerDisplayListener(displayListener, null)
 
         binding.textFps.visibility = View.INVISIBLE
         binding.viewLayoutControls.setLayoutComponentViewBuilderFactory(RuntimeLayoutComponentViewBuilderFactory())
@@ -284,9 +334,9 @@ class EmulatorActivity : AppCompatActivity() {
         }
         binding.root.addOnLayoutChangeListener(layoutChangeListener)
 
-        setupInputHandling()
         updateOrientation(resources.configuration)
-        launchEmulator()
+        disableScreenTimeOut()
+        showExternalDisplay()
 
         binding.layoutAchievement.setContent {
             MelonTheme {
@@ -364,8 +414,27 @@ class EmulatorActivity : AppCompatActivity() {
                     AchievementListDialog(
                         viewModel = achievementsViewModel,
                         onDismiss = {
+                            activeOverlays.removeActiveOverlay(EmulatorOverlay.ACHIEVEMENTS_DIALOG)
                             viewModel.resumeEmulator()
                             showAchievementList.value = false
+                        }
+                    )
+                }
+
+                if (showQuickSettings.value) {
+                    QuickSettingsDialog(
+                        currentScreen = viewModel.getExternalDisplayScreen(),
+                        onScreenSelected = {
+                            viewModel.setExternalDisplayScreen(it)
+                        },
+                        keepAspectRatio = viewModel.isExternalDisplayKeepAspectRatioEnabled(),
+                        onKeepAspectRatioChanged = { enabled ->
+                            viewModel.setExternalDisplayKeepAspectRatioEnabled(enabled)
+                        },
+                        onDismiss = {
+                            activeOverlays.removeActiveOverlay(EmulatorOverlay.QUICK_SETTINGS_DIALOG)
+                            viewModel.resumeEmulator()
+                            showQuickSettings.value = false
                         }
                     )
                 }
@@ -382,30 +451,53 @@ class EmulatorActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
-                viewModel.frameRenderEvent.collect {
-                    dsRenderer.prepareNextFrame(it)
-                    binding.surfaceMain.requestRender()
-                }
-            }
-        }
-        lifecycleScope.launch {
-            lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
                 viewModel.runtimeLayout.collectLatest {
                     setupSoftInput(it)
                 }
             }
         }
         lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.controllerConfiguration.collect {
+                    setupInputHandling(it)
+                    connectedControllerManager.setCurrentControllerConfiguration(it)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                connectedControllerManager.controllersState.collect {
+                    binding.viewLayoutControls.setConnectedControllersState(it)
+                }
+            }
+        }
+        lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
                 viewModel.background.collectLatest {
-                    dsRenderer.setBackground(it)
+                    mainScreenRenderer.setBackground(it)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
+                viewModel.externalBackground.collectLatest {
+                    presentation?.updateBackground(it)
                 }
             }
         }
         lifecycleScope.launch {
             lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
                 viewModel.runtimeRendererConfiguration.collectLatest {
-                    dsRenderer.updateRendererConfiguration(it)
+                    mainScreenRenderer.updateRendererConfiguration(it)
+                    presentation?.updateRendererConfiguration(it)
+                }
+            }
+        }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.externalDisplayConfiguration.collect {
+                    val areScreensSwapped = binding.viewLayoutControls.areScreensSwapped()
+                    presentation?.updateExternalDisplayConfiguration(it, areScreensSwapped)
                 }
             }
         }
@@ -446,7 +538,13 @@ class EmulatorActivity : AppCompatActivity() {
             lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
                 viewModel.uiEvent.collectLatest {
                     when (it) {
-                        EmulatorUiEvent.CloseEmulator -> finish()
+                        EmulatorUiEvent.CloseEmulator -> {
+                            Choreographer.getInstance().removeFrameCallback(this@EmulatorActivity)
+                            presentation?.apply {
+                                show()
+                            }
+                            finish()
+                        }
                         is EmulatorUiEvent.OpenScreen.CheatsScreen -> {
                             val intent = Intent(this@EmulatorActivity, CheatsActivity::class.java)
                             intent.putExtra(CheatsActivity.KEY_ROM_INFO, RomInfoParcelable.fromRomInfo(it.romInfo))
@@ -467,7 +565,14 @@ class EmulatorActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        EmulatorUiEvent.ShowAchievementList -> showAchievementList.value = true
+                        EmulatorUiEvent.ShowAchievementList -> {
+                            activeOverlays.addActiveOverlay(EmulatorOverlay.ACHIEVEMENTS_DIALOG)
+                            showAchievementList.value = true
+                        }
+                        EmulatorUiEvent.ShowQuickSettings -> {
+                            activeOverlays.addActiveOverlay(EmulatorOverlay.QUICK_SETTINGS_DIALOG)
+                            showQuickSettings.value = true
+                        }
                     }
                 }
             }
@@ -493,7 +598,6 @@ class EmulatorActivity : AppCompatActivity() {
                             setupFpsCounter()
                             binding.textLoading.isGone = true
                             binding.viewLayoutControls.isVisible = true
-                            emulatorReady = true
                             backPressedCallback.isEnabled = true
                         }
                         is EmulatorState.RomLoadError -> {
@@ -536,13 +640,87 @@ class EmulatorActivity : AppCompatActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.CREATED) {
+                appForegroundStateObserver.onAppMovedToBackgroundEvent.collect {
+                    presentation?.dismiss()
+                    presentation = null
+                }
+            }
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        showExternalDisplay()
+        getSystemService<InputManager>()?.registerInputDeviceListener(connectedControllerManager, null)
+        connectedControllerManager.startTrackingControllers()
+    }
+
+    /**
+     * Creates a presentation for an external display if one is connected.
+     *
+     * This method checks for an available display different from the default
+     * device display. When found, it instantiates [ExternalPresentation],
+     * stores it in [ExternalDisplayManager] and shows it. If the OpenGL context
+     * is already available, it will also share it with the new presentation.
+     */
+    private fun showExternalDisplay() {
+        if (presentation != null) return
+
+        val displays = displayManager.displays
+        Log.d("DualScreenEmulator", "Found ${displays.size} displays.")
+        for (display in displays) {
+            Log.d("DualScreenEmulator", "Display ID: ${display.displayId}, Name: ${display.name}")
+        }
+
+        val currentDisplay = ContextCompat.getDisplayOrDefault(this)
+        val targetDisplay = if (currentDisplay.displayId != Display.DEFAULT_DISPLAY) {
+            displayManager.getDisplay(Display.DEFAULT_DISPLAY)
+        } else {
+            displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
+                .firstOrNull { it.displayId != Display.DEFAULT_DISPLAY && it.name != "HiddenDisplay" }
+        }
+        if (targetDisplay != null) {
+            Log.d(
+                "DualScreenEmulator",
+                "Using external display: ID=${targetDisplay.displayId}, Name=${targetDisplay.name}"
+            )
+
+            presentation = ExternalPresentation(
+                context = this,
+                display = targetDisplay,
+                initialDisplayConfiguration = viewModel.externalDisplayConfiguration.value,
+                areScreensSwapped = binding.viewLayoutControls.areScreensSwapped(),
+                frameRenderCoordinator = frameRenderCoordinator,
+                inputListener = melonTouchHandler,
+            ).apply {
+                setOnShowListener {
+                    Log.d("DualScreenEmulator", "Presentation successfully shown on external display.")
+                }
+
+                try {
+                    show()
+                    Log.d("DualScreenEmulator", "Presentation.show() called")
+                } catch (e: Exception) {
+                    Log.e("DualScreenEmulator", "Error showing presentation: ${e.message}", e)
+                }
+
+            }
+        }else {
+            Log.w("DualScreenEmulator", "No external display found.")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
 
+        val launchArgs = LaunchArgs.fromIntent(intent)
+        // Invalid arguments. Ignore completely
+        if (launchArgs == null)
+            return
+
         if (viewModel.emulatorState.value.isRunning()) {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             viewModel.pauseEmulator(false)
             backPressedCallback.isEnabled = false
 
@@ -551,9 +729,8 @@ class EmulatorActivity : AppCompatActivity() {
                     .setTitle(getString(R.string.title_emulator_running))
                     .setMessage(getString(R.string.message_stop_emulation))
                     .setPositiveButton(R.string.ok) { _, _ ->
-                        viewModel.stopEmulator()
                         setIntent(intent)
-                        launchEmulator()
+                        viewModel.relaunchWithNewArgs(launchArgs)
                     }
                     .setNegativeButton(R.string.no) { dialog, _ ->
                         dialog.cancel()
@@ -571,7 +748,7 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        binding.surfaceMain.onResume()
+        Choreographer.getInstance().postFrameCallback(this)
 
         if (!activeOverlays.hasActiveOverlays()) {
             disableScreenTimeOut()
@@ -579,40 +756,9 @@ class EmulatorActivity : AppCompatActivity() {
         }
     }
 
-    private fun launchEmulator() {
-        val extras = intent?.extras
-        val bootFirmwareOnly = extras?.getBoolean(KEY_BOOT_FIRMWARE_ONLY) ?: false
-
-        lifecycleScope.launch {
-            val glContext = currentOpenGlContext.filterNotNull().first()
-
-            disableScreenTimeOut()
-            if (bootFirmwareOnly) {
-                val consoleTypeParameter = extras?.getInt(KEY_BOOT_FIRMWARE_CONSOLE, -1)
-                if (consoleTypeParameter == null || consoleTypeParameter == -1) {
-                    throw RuntimeException("No console type specified")
-                }
-
-                val firmwareConsoleType = ConsoleType.entries[consoleTypeParameter]
-                viewModel.loadFirmware(firmwareConsoleType, glContext)
-            } else {
-                val romParcelable = extras?.parcelable(KEY_ROM) as RomParcelable?
-
-                if (romParcelable?.rom != null) {
-                    viewModel.loadRom(romParcelable.rom, glContext)
-                } else {
-                    if (extras?.containsKey(KEY_PATH) == true) {
-                        val romPath = extras.getString(KEY_PATH)!!
-                        viewModel.loadRom(romPath, glContext)
-                    } else if (extras?.containsKey(KEY_URI) == true) {
-                        val romUri = extras.getString(KEY_URI)!!
-                        viewModel.loadRom(romUri.toUri(), glContext)
-                    } else {
-                        throw RuntimeException("No ROM was specified")
-                    }
-                }
-            }
-        }
+    override fun doFrame(frameTimeNanos: Long) {
+        frameRenderCoordinator.renderFrame()
+        Choreographer.getInstance().postFrameCallback(this)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -687,6 +833,10 @@ class EmulatorActivity : AppCompatActivity() {
     private fun swapScreen() {
         binding.viewLayoutControls.swapScreens()
         updateRendererScreenAreas()
+        presentation?.updateExternalDisplayConfiguration(
+            newExternalDisplayConfiguration = viewModel.externalDisplayConfiguration.value,
+            areScreensSwapped = binding.viewLayoutControls.areScreensSwapped(),
+        )
     }
 
     private fun updateRendererScreenAreas() {
@@ -695,14 +845,20 @@ class EmulatorActivity : AppCompatActivity() {
         } else {
             LayoutComponent.TOP_SCREEN to LayoutComponent.BOTTOM_SCREEN
         }
-        dsRenderer.updateScreenAreas(
-            binding.viewLayoutControls.getLayoutComponentView(topScreen)?.getRect(),
-            binding.viewLayoutControls.getLayoutComponentView(bottomScreen)?.getRect()
+        val topView = binding.viewLayoutControls.getLayoutComponentView(topScreen)
+        val bottomView = binding.viewLayoutControls.getLayoutComponentView(bottomScreen)
+        mainScreenRenderer.updateScreenAreas(
+            topView?.getRect(),
+            bottomView?.getRect(),
+            topView?.baseAlpha ?: 1f,
+            bottomView?.baseAlpha ?: 1f,
+            topView?.onTop ?: false,
+            bottomView?.onTop ?: false,
         )
     }
 
-    private fun setupInputHandling() {
-        nativeInputListener = InputProcessor(settingsRepository.getControllerConfiguration(), melonTouchHandler, frontendInputHandler)
+    private fun setupInputHandling(controllerConfiguration: ControllerConfiguration) {
+        nativeInputListener = InputProcessor(controllerConfiguration, melonTouchHandler, frontendInputHandler)
     }
 
     private fun handleBackPressed() {
@@ -764,9 +920,9 @@ class EmulatorActivity : AppCompatActivity() {
         val dateFormatter = SimpleDateFormat("EEE, dd MMM yyyy", ConfigurationCompat.getLocales(resources.configuration)[0])
         val timeFormatter = SimpleDateFormat("kk:mm:ss", ConfigurationCompat.getLocales(resources.configuration)[0])
         var dialog: AlertDialog? = null
-        var adapter: SaveStateListAdapter? = null
+        var adapter: SaveStateAdapter? = null
 
-        adapter = SaveStateListAdapter(
+        adapter = SaveStateAdapter(
             slots = slots,
             picasso = picasso,
             dateFormat = dateFormatter,
@@ -782,11 +938,19 @@ class EmulatorActivity : AppCompatActivity() {
             },
         )
 
+        val recyclerView = RecyclerView(this).apply {
+            val layoutManager = LinearLayoutManager(this@EmulatorActivity)
+            this.layoutManager = layoutManager
+            addItemDecoration(DividerItemDecoration(context, layoutManager.orientation))
+            this.adapter = adapter
+            descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        }
+
         activeOverlays.addActiveOverlay(EmulatorOverlay.SAVE_STATES_DIALOG)
+
         dialog = AlertDialog.Builder(this)
             .setTitle(getString(R.string.save_slot))
-            .setAdapter(adapter) { _, _ ->
-            }
+            .setView(recyclerView)
             .setNegativeButton(R.string.cancel) { _dialog, _ ->
                 _dialog.cancel()
             }
@@ -863,12 +1027,25 @@ class EmulatorActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         enableScreenTimeOut()
-        binding.surfaceMain.onPause()
+        Choreographer.getInstance().removeFrameCallback(this)
         viewModel.pauseEmulator(false)
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updateOrientation(newConfig)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        getSystemService<InputManager>()?.unregisterInputDeviceListener(connectedControllerManager)
+        connectedControllerManager.stopTrackingControllers()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        frameRenderCoordinator.stop()
+        presentation?.dismiss()
+        displayManager.unregisterDisplayListener(displayListener)
     }
 }

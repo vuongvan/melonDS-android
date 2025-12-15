@@ -15,8 +15,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
@@ -32,6 +34,7 @@ import me.magnum.melonds.domain.model.AudioInterpolation
 import me.magnum.melonds.domain.model.AudioLatency
 import me.magnum.melonds.domain.model.ConsoleType
 import me.magnum.melonds.domain.model.ControllerConfiguration
+import me.magnum.melonds.domain.model.DsExternalScreen
 import me.magnum.melonds.domain.model.EmulatorConfiguration
 import me.magnum.melonds.domain.model.FirmwareConfiguration
 import me.magnum.melonds.domain.model.FpsCounterPosition
@@ -46,10 +49,12 @@ import me.magnum.melonds.domain.model.SortingOrder
 import me.magnum.melonds.domain.model.VideoFiltering
 import me.magnum.melonds.domain.model.VideoRenderer
 import me.magnum.melonds.domain.model.camera.DSiCameraSourceType
+import me.magnum.melonds.domain.model.input.SoftInputBehaviour
 import me.magnum.melonds.domain.model.layout.LayoutConfiguration
 import me.magnum.melonds.domain.model.rom.Rom
 import me.magnum.melonds.domain.repositories.SettingsRepository
 import me.magnum.melonds.impl.dtos.input.ControllerConfigurationDto
+import me.magnum.melonds.impl.input.ControllerConfigurationFactory
 import me.magnum.melonds.ui.Theme
 import me.magnum.melonds.utils.enumValueOfIgnoreCase
 import java.io.File
@@ -59,6 +64,7 @@ import kotlin.math.pow
 class SharedPreferencesSettingsRepository(
     private val context: Context,
     private val preferences: SharedPreferences,
+    private val controllerConfigurationFactory: ControllerConfigurationFactory,
     private val json: Json,
     private val uriHandler: UriHandler,
     preferencesCoroutineScope: CoroutineScope,
@@ -69,7 +75,20 @@ class SharedPreferencesSettingsRepository(
         private const val CONTROLLER_CONFIG_FILE = "controller_config.json"
     }
 
-    private var controllerConfiguration: ControllerConfiguration? = null
+    @OptIn(ExperimentalSerializationApi::class)
+    private val controllerConfiguration by lazy {
+        val initialConfiguration = try {
+            val configFile = File(context.filesDir, CONTROLLER_CONFIG_FILE)
+            configFile.inputStream().use {
+                val loadedConfiguration = json.decodeFromStream<ControllerConfigurationDto>(it)
+                loadedConfiguration.toControllerConfiguration()
+            }
+        } catch (_: Exception) {
+            controllerConfigurationFactory.buildDefaultControllerConfiguration()
+        }
+
+        MutableStateFlow(initialConfiguration)
+    }
     private val preferenceObservers: HashMap<String, PublishSubject<Any>> = HashMap()
     private val preferenceSharedFlows = mutableMapOf<String, MutableSharedFlow<Unit>>()
     private val renderConfigurationFlow: SharedFlow<RendererConfiguration>
@@ -195,7 +214,6 @@ class SharedPreferencesSettingsRepository(
         // Cache size is 128MB * (cacheSizeStepPreference ^ 2)
         return SizeUnit.MB(128) * 2.toDouble().pow(cacheSizeStepPreference).toLong()
     }
-
     override fun getDefaultConsoleType(): ConsoleType {
         val consoleTypePreference = preferences.getString("console_type", "ds")!!
         return enumValueOfIgnoreCase(consoleTypePreference)
@@ -296,6 +314,37 @@ class SharedPreferencesSettingsRepository(
         return FpsCounterPosition.valueOf(fpsCounterPreference.uppercase())
     }
 
+    override fun getExternalDisplayScreen(): DsExternalScreen {
+        val screenPref = preferences.getString("external_display_screen", "top")!!
+        return when (screenPref) {
+            "bottom" -> DsExternalScreen.BOTTOM
+            "custom" -> DsExternalScreen.CUSTOM
+            else -> DsExternalScreen.TOP
+        }
+    }
+
+    override fun observeExternalDisplayScreen(): Flow<DsExternalScreen> {
+        return getOrCreatePreferenceSharedFlow("external_display_screen") {
+            getExternalDisplayScreen()
+        }
+    }
+
+    override fun isExternalDisplayKeepAspectRationEnabled(): Boolean {
+        return preferences.getBoolean("external_display_keep_ratio", true)
+    }
+
+    override fun observeExternalDisplayKeepAspectRationEnabled(): Flow<Boolean> {
+        return getOrCreatePreferenceSharedFlow("external_display_keep_ratio") {
+            isExternalDisplayKeepAspectRationEnabled()
+        }
+    }
+
+    override fun isExternalDisplayRotateLeftEnabled(): Flow<Boolean> {
+        return getOrCreatePreferenceSharedFlow("external_display_rotate_left") {
+            preferences.getBoolean("external_display_rotate_left", false)
+        }
+    }
+
     override fun getDSiCameraSource(): DSiCameraSourceType {
         val dsiCameraSource = preferences.getString("dsi_camera_source", "physical_cameras")!!
         return DSiCameraSourceType.valueOf(dsiCameraSource.uppercase())
@@ -368,7 +417,18 @@ class SharedPreferencesSettingsRepository(
         return if (!saveNextToRomFile() && getSaveFileDirectory() != null) {
             getSaveFileDirectory()!!
         } else {
-            getRomParentDirectory(rom)
+            if (rom.parentTreeUri != null) {
+                getRomParentDirectory(rom)
+            } else {
+                // We don't know the ROM's directory, so we can't save next to it. Put save file in an app folder
+                val externalFilesDir = context.getExternalFilesDir(null)
+                val saveFileDirectory = File(externalFilesDir, "saves")
+                if (!saveFileDirectory.isDirectory && !saveFileDirectory.mkdirs()) {
+                    throw Exception("Could not create internal save directory")
+                }
+
+                Uri.fromFile(saveFileDirectory)
+            }
         }
     }
 
@@ -394,24 +454,17 @@ class SharedPreferencesSettingsRepository(
     }
 
     private fun getRomParentDirectory(rom: Rom): Uri {
-        return uriHandler.getUriTreeDocument(rom.parentTreeUri)?.uri ?: throw Exception("Could not determine ROMs parent document")
+        return rom.parentTreeUri?.let {
+            uriHandler.getUriTreeDocument(rom.parentTreeUri)?.uri
+        } ?: throw Exception("Could not determine ROMs parent document")
     }
 
-    @OptIn(ExperimentalSerializationApi::class)
     override fun getControllerConfiguration(): ControllerConfiguration {
-        if (controllerConfiguration == null) {
-            try {
-                val configFile = File(context.filesDir, CONTROLLER_CONFIG_FILE)
-                configFile.inputStream().use {
-                    val loadedConfiguration = json.decodeFromStream<ControllerConfigurationDto>(it)
-                    controllerConfiguration = loadedConfiguration.toControllerConfiguration()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to load controller configuration", e)
-                controllerConfiguration = ControllerConfiguration.empty()
-            }
-        }
-        return controllerConfiguration!!
+        return controllerConfiguration.value
+    }
+
+    override fun observeControllerConfiguration(): StateFlow<ControllerConfiguration> {
+        return controllerConfiguration
     }
 
     override fun getSelectedLayoutId(): UUID {
@@ -419,9 +472,22 @@ class SharedPreferencesSettingsRepository(
         return id?.let { UUID.fromString(it) } ?: LayoutConfiguration.DEFAULT_ID
     }
 
-    override fun showSoftInput(): Flow<Boolean> {
-        return getOrCreatePreferenceSharedFlow("input_show_soft") {
-            preferences.getBoolean("input_show_soft", true)
+    override fun getExternalLayoutId(): UUID {
+        val id = preferences.getString("external_layout_id", null)
+        return id?.let { UUID.fromString(it) } ?: LayoutConfiguration.DEFAULT_EXTERNAL_ID
+    }
+
+    override fun getSoftInputBehaviour(): Flow<SoftInputBehaviour> {
+        return getOrCreatePreferenceSharedFlow("soft_input_behaviour") {
+            val preference = preferences.getString("soft_input_behaviour", "hide_system_buttons_when_controller_connected")
+
+            when (preference) {
+                "always_visible" -> SoftInputBehaviour.ALWAYS_VISIBLE
+                "hide_system_buttons_when_controller_connected" -> SoftInputBehaviour.HIDE_SYSTEM_BUTTONS_WHEN_CONTROLLERS_CONNECTED
+                "hide_mapped_buttons_when_controller_connected" -> SoftInputBehaviour.HIDE_ALL_BUTTONS_ASSIGNED_TO_CONNECTED_CONTROLLERS
+                "always_invisible" -> SoftInputBehaviour.ALWAYS_INVISIBLE
+                else -> SoftInputBehaviour.HIDE_SYSTEM_BUTTONS_WHEN_CONTROLLERS_CONNECTED
+            }
         }
     }
 
@@ -454,8 +520,8 @@ class SharedPreferencesSettingsRepository(
         return preferences.getBoolean("cheats_enabled", false)
     }
 
-    override fun observeRomSearchDirectories(): Observable<Array<Uri>> {
-        return getOrCreatePreferenceObservable("rom_search_dirs") {
+    override fun observeRomSearchDirectories(): Flow<Array<Uri>> {
+        return getOrCreatePreferenceSharedFlow("rom_search_dirs") {
             getRomSearchDirectories()
         }
     }
@@ -463,6 +529,12 @@ class SharedPreferencesSettingsRepository(
     override fun observeSelectedLayoutId(): Observable<UUID> {
         return getOrCreatePreferenceObservable("input_layout_id") {
             getSelectedLayoutId()
+        }
+    }
+
+    override fun observeExternalLayoutId(): Observable<UUID> {
+        return getOrCreatePreferenceObservable("external_layout_id") {
+            getExternalLayoutId()
         }
     }
 
@@ -498,7 +570,7 @@ class SharedPreferencesSettingsRepository(
 
     @OptIn(ExperimentalSerializationApi::class)
     override fun setControllerConfiguration(controllerConfiguration: ControllerConfiguration) {
-        this.controllerConfiguration = controllerConfiguration
+        this.controllerConfiguration.value = controllerConfiguration
 
         try {
             val configFile = File(context.filesDir, CONTROLLER_CONFIG_FILE)
@@ -526,6 +598,35 @@ class SharedPreferencesSettingsRepository(
     override fun setSelectedLayoutId(layoutId: UUID) {
         preferences.edit {
             putString("input_layout_id", layoutId.toString())
+        }
+    }
+
+    override fun setExternalLayoutId(layoutId: UUID) {
+        preferences.edit {
+            putString("external_layout_id", layoutId.toString())
+        }
+    }
+
+    override fun setExternalDisplayScreen(screen: DsExternalScreen) {
+        val value = when (screen) {
+            DsExternalScreen.TOP -> "top"
+            DsExternalScreen.BOTTOM -> "bottom"
+            DsExternalScreen.CUSTOM -> "custom"
+        }
+        preferences.edit {
+            putString("external_display_screen", value)
+        }
+    }
+
+    override fun setExternalDisplayKeepAspectRatioEnabled(enabled: Boolean) {
+        preferences.edit {
+            putBoolean("external_display_keep_ratio", enabled)
+        }
+    }
+
+    override fun setExternalDisplayRotateLeftEnabled(enabled: Boolean) {
+        preferences.edit {
+            putBoolean("external_display_rotate_left", enabled)
         }
     }
 

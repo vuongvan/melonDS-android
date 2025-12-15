@@ -21,7 +21,6 @@ import me.magnum.melonds.domain.model.EmulatorConfiguration
 import me.magnum.melonds.domain.model.MicSource
 import me.magnum.melonds.domain.model.emulator.FirmwareLaunchResult
 import me.magnum.melonds.domain.model.emulator.RomLaunchResult
-import me.magnum.melonds.domain.model.render.FrameRenderEvent
 import me.magnum.melonds.domain.model.retroachievements.GameAchievementData
 import me.magnum.melonds.domain.model.retroachievements.RAEvent
 import me.magnum.melonds.domain.model.retroachievements.RASimpleAchievement
@@ -49,18 +48,15 @@ class AndroidEmulatorManager(
 
     private val achievementsSharedFlow = MutableSharedFlow<RAEvent>(replay = 0, extraBufferCapacity = Int.MAX_VALUE)
 
-    private val _frameRenderedEvent = MutableSharedFlow<FrameRenderEvent>(replay = 0, extraBufferCapacity = 1)
-    override val frameRenderedEvent = _frameRenderedEvent.asSharedFlow()
-
     private val loadedAchievements = mutableListOf<RASimpleAchievement>()
 
-    override suspend fun loadRom(rom: Rom, cheats: List<Cheat>, glContext: Long): RomLaunchResult {
+    override suspend fun loadRom(rom: Rom, cheats: List<Cheat>): RomLaunchResult {
         return withContext(Dispatchers.IO) {
             val fileRomDocument = DocumentFile.fromSingleUri(context, rom.uri) ?: return@withContext RomLaunchResult.LaunchFailedRomNotFound
             val fileRomProcessor = romFileProcessorFactory.getFileRomProcessorForDocument(fileRomDocument)
             val romUri = fileRomProcessor?.getRealRomUri(rom)?.await() ?: throw RomLoadException("Unsupported ROM file extension: ${fileRomDocument.extension}")
 
-            setupEmulator(getRomEmulatorConfiguration(rom), glContext)
+            setupEmulator(getRomEmulatorConfiguration(rom))
 
             val sram = try {
                 sramProvider.getSramForRom(rom)
@@ -95,9 +91,9 @@ class AndroidEmulatorManager(
         }
     }
 
-    override suspend fun loadFirmware(consoleType: ConsoleType, glContext: Long): FirmwareLaunchResult {
+    override suspend fun loadFirmware(consoleType: ConsoleType): FirmwareLaunchResult {
         return withContext(Dispatchers.IO) {
-            setupEmulator(getFirmwareEmulatorConfiguration(consoleType), glContext)
+            setupEmulator(getFirmwareEmulatorConfiguration(consoleType))
             val result = MelonEmulator.bootFirmware()
             if (result != MelonEmulator.FirmwareLoadResult.SUCCESS) {
                 cameraManager.stopCurrentCameraSource()
@@ -188,10 +184,9 @@ class AndroidEmulatorManager(
         return achievementsSharedFlow.asSharedFlow()
     }
 
-    private fun setupEmulator(emulatorConfiguration: EmulatorConfiguration, glContext: Long) {
+    private fun setupEmulator(emulatorConfiguration: EmulatorConfiguration) {
         MelonEmulator.setupEmulator(
             emulatorConfiguration = emulatorConfiguration,
-            assetManager = context.assets,
             dsiCameraSource = cameraManager,
             retroAchievementsCallback = object : RetroAchievementsCallback {
                 override fun onAchievementPrimed(achievementId: Long) {
@@ -206,11 +201,7 @@ class AndroidEmulatorManager(
                     achievementsSharedFlow.tryEmit(RAEvent.OnAchievementUnPrimed(achievementId))
                 }
             },
-            frameRenderedListener = { textureId ->
-                _frameRenderedEvent.tryEmit(FrameRenderEvent(textureId))
-            },
             screenshotBuffer = screenshotFrameBufferProvider.frameBuffer(),
-            glContext = glContext,
         )
     }
 
